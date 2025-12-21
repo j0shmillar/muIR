@@ -1,0 +1,2 @@
+[console_scripts]
+unpu-bench = unpu_bench.cli:main

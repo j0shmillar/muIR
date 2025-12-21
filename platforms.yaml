@@ -1,0 +1,228 @@
+formats:
+  onnx:
+    bit_widths: [32]
+    flags:
+      opset:
+        type: int
+        default: 19
+        help: ONNX opset
+      custom_opsets:
+        type: str
+        default: null
+        help: Custom ONNX opset domains and versions
+      export_params:
+        type: bool
+        default: true
+        help: Export ONNX parameters
+      do_constant_folding:
+        type: bool
+        default: true
+        help: Apply constant folding
+      keep_initializers_as_inputs:
+        type: bool
+        default: false
+        help: Treat initializers as model inputs
+      dynamic_axes:
+        type: str
+        default: null
+        help: Define dynamic input/output axes
+
+  tflm:
+    depends_on: [onnx]
+    bit_widths: [8, 16, 32]
+    flags:
+      use_onnxsim:
+        action: store_true
+        help: Use onnxsim for TFLM
+      output_integer_quantized_tflite:
+        action: store_true
+        default: true
+        help: INT8 quantized TFLM
+      tflm_quant_type:
+        type: str
+        choices: [per_tensor, per_channel]
+        default: per_channel
+        help: TFLM quantization method
+      disable_group_convolution:
+        action: store_true
+        help: Disable group convolution
+      enable_batchmatmul_unfold:
+        action: store_true
+        help: Enable batchmatmul unfold
+        
+  ai8x:
+    bit_widths: [1, 2, 4, 8]
+    requires:
+      config_file: true
+    compatible_hardware: [max78000, max78002]
+    flags:
+      avg_pool_rounding:
+        action: store_true
+        help: Round average pooling results
+      simple1b:
+        action: store_true
+        help: Use simple XOR instead of 1-bit multiplication
+      config_file:
+        type: str
+        help: YAML model config file path
+      board_name:
+        type: str
+        default: EvKit_V1
+        help: Target board
+      compact_weights:
+        action: store_true
+        help: Use memcpy for weights
+      mlator:
+        action: store_true
+        help: Use hardware byte swap
+      softmax:
+        action: store_true
+        help: Add software softmax
+      boost:
+        type: float
+        help: Boost CNN supply voltage
+      no_wfi:
+        action: store_true
+        help: Disable WFI instructions
+      max_speed:
+        action: store_true
+        help: Prioritize speed
+      fifo:
+        action: store_true
+        help: Use FIFO for streaming
+      fast_fifo:
+        action: store_true
+        help: Use fast FIFO
+      fast_fifo_quad:
+        action: store_true
+        help: Use fast FIFO in quad mode
+      riscv:
+        action: store_true
+        help: Use RISC-V
+      riscv_exclusive:
+        action: store_true
+        help: Exclusive SRAM for RISC-V
+      input_offset:
+        type: str
+        help: First layer input offset (hex)
+      write_zero_registers:
+        action: store_true
+        help: Write zero registers
+      init_tram:
+        action: store_true
+        help: Init TRAM to 0
+      zero_sram:
+        action: store_true
+        help: Zero SRAM
+      zero_unused:
+        action: store_true
+        help: Zero unused registers
+      max_verify_length:
+        type: int
+        help: Max output verify length
+      no_unload:
+        action: store_true
+        help: No cnn_unload()
+      no_deduplicate_weights:
+        action: store_true
+        help: No weight deduplication
+      no_scale_output:
+        action: store_true
+        help: Do not scale output
+      qat_policy:
+        type: str
+        default: null
+        help: QAT policy
+      clip_method:
+        type: str
+        choices: [AVGMAX, MAX, STDDEV, SCALE]
+        help: Clip method for quantization
+      q_scale:
+        type: str
+        default: 0.85
+        help: Quantization scale
+
+  vela:
+    depends_on: [onnx, tflm]
+    bit_widths: [8, 16, 32]
+    compatible_hardware: [hxwe2]
+    flags:
+      config_vela:
+        type: str
+        help: Vela config file
+      config_vela_system:
+        type: str
+        default: internal-default
+        help: Vela system config
+      force_symmetric_int_weights:
+        action: store_true
+        help: Force symmetric int weights
+      memory_mode:
+        type: str
+        default: internal-default
+        help: Memory mode
+      tensor_allocator:
+        type: str
+        choices: [LinearAlloc, Greedy, HillClimb]
+        default: HillClimb
+        help: Tensor allocator
+      max_block_dependency:
+        type: int
+        choices: [0, 1, 2, 3]
+        default: 3
+        help: Max block dependency
+      arena_cache_size:
+        type: int
+        help: Arena cache size
+      cpu_tensor_alignment:
+        type: int
+        default: 16
+        help: CPU tensor alignment
+      recursion_limit:
+        type: int
+        default: 1000
+        help: Recursion limit
+      hillclimb_max_iterations:
+        type: int
+        default: 99999
+        help: HillClimb iterations
+      vela_optimise:
+        type: str
+        choices: [Size, Performance]
+        default: Performance
+        help: Optimisation strategy
+
+  cvi:
+    depends_on: [onnx]
+    bit_widths: [4, 8, 16, 32, 'F32', 'BF16', 'F16', 'INT8', 'INT4', 'W8F16', 'W8BF16', 'W4F16', 'W4BF16', 'F8E4M3', 'F8E5M2', 'QDQ']
+    compatible_hardware: [bm1684x, cv180x]
+    flags:
+      calibration_table:
+        type: str
+        help: Quantization table path
+      tolerance:
+        type: float
+        default: 0.99
+        help: Similarity tolerance between quantized and FP32
+      dynamic:
+        action: store_true
+        help: Enable dynamic input shapes
+
+  eiq:
+    depends_on: [onnx, tflm]
+    bit_widths: [8]
+    compatible_hardware: [mcxn947]
+
+hardware:
+  max78000: { formats: [ai8x] }
+  max78002: { formats: [ai8x] }
+  hxwe2: { formats: [vela] }
+  ethos-u55-32: { formats: [vela] }
+  ethos-u55-64: { formats: [vela] }
+  ethos-u55-128: { formats: [vela] }
+  ethos-u55-256: { formats: [vela] }
+  ethos-u65-256: { formats: [vela] }
+  ethos-u65-512: { formats: [vela] }
+  mcxn947: { formats: [eiq] }
+  bm1684x: { formats: [cvi] }
+  cv180x: { formats: [cvi]}

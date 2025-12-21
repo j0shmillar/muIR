@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unpu-bench"
+version = "0.1.0"
+description = "Production-ready µNPU model compiler and runtime build tool"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+  { name = "Josh Millar" },
+]
+dependencies = [
+  "numpy>=1.23",
+  "torch>=2.0.0",
+  "onnx>=1.14.0",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=4.0",
+  "ruff>=0.6",
+  "mypy>=1.10",
+]
+
+[project.scripts]
+unpu-bench = "unpu_bench.cli:main"
+
+[tool.setuptools]
+packages = ["unpu_bench"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+select = ["E", "F", "W", "I"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
