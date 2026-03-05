@@ -31,6 +31,7 @@ unpu-bench = "unpu_bench.cli:main"
 
 [tool.setuptools]
 packages = ["unpu_bench"]
+py-modules = ["muir"]
 
 [tool.ruff]
 line-length = 100

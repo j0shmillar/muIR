@@ -1,0 +1,86 @@
+schema_version: 1
+fallback_backend: cpu
+
+ops:
+  - op: Conv
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+    attrs:
+      kernel_shape: {required: true, length: 2, min: 1}
+      strides: {required: true, length: 2, min: 1}
+
+  - op: Conv
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+      - dtypes: [f32, i8]
+        rank: 1
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+    attrs:
+      kernel_shape: {required: true, length: 2, min: 1}
+      strides: {required: true, length: 2, min: 1}
+
+  - op: Gemm
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 2
+        layouts: [NC]
+      - dtypes: [f32, i8]
+        rank: 2
+        layouts: [NC]
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 2
+        layouts: [NC]
+
+  - op: Relu
+    inputs:
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]
+
+  - op: Add
+    inputs:
+      - dtypes: [f32, i8]
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]
+
+  - op: MaxPool
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 4
+
+  - op: AveragePool
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 4
+
+  - op: GlobalAveragePool
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+    outputs:
+      - dtypes: [f32, i8]

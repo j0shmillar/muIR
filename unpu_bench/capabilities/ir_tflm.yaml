@@ -1,0 +1,136 @@
+schema_version: 1
+fallback_backend: cpu
+
+ops:
+  - op: Conv
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW, NHWC]
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW, NHWC]
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW, NHWC]
+    attrs:
+      strides: {required: true, length: 2, min: 1}
+      dilations: {length: 2, min: 1}
+
+  - op: Conv
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW, NHWC]
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW, NHWC]
+      - dtypes: [f32, i8]
+        rank: 1
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW, NHWC]
+    attrs:
+      strides: {required: true, length: 2, min: 1}
+      dilations: {length: 2, min: 1}
+
+  - op: DepthwiseConv2d
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW, NHWC]
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW, NHWC]
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW, NHWC]
+    attrs:
+      group: {required: true, min: 2}
+
+  - op: DepthwiseConv2d
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW, NHWC]
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW, NHWC]
+      - dtypes: [f32, i8]
+        rank: 1
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW, NHWC]
+    attrs:
+      group: {required: true, min: 2}
+
+  - op: Gemm
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 2
+        layouts: [NC]
+      - dtypes: [f32, i8]
+        rank: 2
+        layouts: [NC]
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 2
+        layouts: [NC]
+
+  - op: Add
+    inputs:
+      - dtypes: [f32, i8]
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]
+
+  - op: Mul
+    inputs:
+      - dtypes: [f32, i8]
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]
+
+  - op: Relu
+    inputs:
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]
+
+  - op: MaxPool
+    inputs:
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]
+    attrs:
+      kernel_shape: {required: true, length: 2, min: 1}
+
+  - op: AveragePool
+    inputs:
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]
+    attrs:
+      kernel_shape: {required: true, length: 2, min: 1}
+
+  - op: Reshape
+    inputs:
+      - dtypes: [f32, i8, i32]
+    outputs:
+      - dtypes: [f32, i8, i32]
+
+  - op: Flatten
+    inputs:
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]
+
+  - op: Softmax
+    inputs:
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]

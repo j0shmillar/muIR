@@ -1,0 +1,26 @@
+{
+  "dscnn_small": {
+    "checkpoint": "ckpts/random_mcu/dscnn_small.random.pth",
+    "seed": 7,
+    "num_classes": 10,
+    "num_params": 7402
+  },
+  "mobilenetv2_tiny": {
+    "checkpoint": "ckpts/random_mcu/mobilenetv2_tiny.random.pth",
+    "seed": 7,
+    "num_classes": 10,
+    "num_params": 18842
+  },
+  "tiny_resnet8": {
+    "checkpoint": "ckpts/random_mcu/tiny_resnet8.random.pth",
+    "seed": 7,
+    "num_classes": 10,
+    "num_params": 78042
+  },
+  "tiny_convmixer": {
+    "checkpoint": "ckpts/random_mcu/tiny_convmixer.random.pth",
+    "seed": 7,
+    "num_classes": 10,
+    "num_params": 7306
+  }
+}

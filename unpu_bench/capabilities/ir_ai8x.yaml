@@ -1,0 +1,218 @@
+# Unified IR capability schema for ai8x backend.
+# Op names correspond to ONNX op types in Program.graph.ops[*].kind.
+schema_version: 1
+
+fallback_backend: cpu
+
+ops:
+  - op: Conv
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+    attrs:
+      kernel_shape: {required: true, length: 2, min: 1}
+      pads: {length: 4, min: 0}
+      dilations: {min: 1, max: 1}
+      strides: {min: 1, max: 2}
+      group: {required: true, min: 1}
+
+  - op: Conv
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+      - dtypes: [f32, i8]
+        rank: 1
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+    attrs:
+      kernel_shape: {required: true, length: 2, min: 1}
+      pads: {length: 4, min: 0}
+      dilations: {min: 1, max: 1}
+      strides: {min: 1, max: 2}
+      group: {required: true, min: 1}
+
+  - op: DepthwiseConv2d
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+    attrs:
+      kernel_shape: {required: true, length: 2, min: 1}
+      pads: {length: 4, min: 0}
+      dilations: {min: 1, max: 1}
+      strides: {min: 1, max: 2}
+      group: {required: true, min: 2}
+
+  - op: DepthwiseConv2d
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+      - dtypes: [f32, i8]
+        rank: 1
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+    attrs:
+      kernel_shape: {required: true, length: 2, min: 1}
+      pads: {length: 4, min: 0}
+      dilations: {min: 1, max: 1}
+      strides: {min: 1, max: 2}
+      group: {required: true, min: 2}
+
+  - op: Gemm
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 2
+        layouts: [NC]
+      - dtypes: [f32, i8]
+        rank: 2
+        layouts: [NC]
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 2
+        layouts: [NC]
+
+  - op: MatMul
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 2
+        layouts: [NC]
+      - dtypes: [f32, i8]
+        rank: 2
+        layouts: [NC]
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 2
+        layouts: [NC]
+
+  - op: Relu
+    inputs:
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]
+
+  - op: LeakyRelu
+    inputs:
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]
+
+  - op: MaxPool
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+    attrs:
+      kernel_shape: {required: true, length: 2, min: 1}
+      strides: {required: true, length: 2, min: 1}
+      pads: {length: 4, min: 0}
+
+  - op: AveragePool
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+    outputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+    attrs:
+      kernel_shape: {required: true, length: 2, min: 1}
+      strides: {required: true, length: 2, min: 1}
+      pads: {length: 4, min: 0}
+
+  - op: GlobalAveragePool
+    inputs:
+      - dtypes: [f32, i8]
+        rank: 4
+        layouts: [NCHW]
+    outputs:
+      - dtypes: [f32, i8]
+
+  - op: BatchNormalization
+    inputs:
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]
+
+  - op: Add
+    inputs:
+      - dtypes: [f32, i8]
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]
+
+  - op: Sub
+    inputs:
+      - dtypes: [f32, i8]
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]
+
+  - op: Mul
+    inputs:
+      - dtypes: [f32, i8]
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]
+
+  - op: Concat
+    inputs: []
+    outputs:
+      - dtypes: [f32, i8]
+
+  - op: Reshape
+    inputs:
+      - dtypes: [f32, i8, i32]
+    outputs:
+      - dtypes: [f32, i8, i32]
+
+  - op: Transpose
+    inputs:
+      - dtypes: [f32, i8, i32]
+    outputs:
+      - dtypes: [f32, i8, i32]
+
+  - op: Flatten
+    inputs:
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]
+    attrs:
+      axis: {min: 0, max: 3}
+
+  - op: Softmax
+    inputs:
+      - dtypes: [f32, i8]
+    outputs:
+      - dtypes: [f32, i8]

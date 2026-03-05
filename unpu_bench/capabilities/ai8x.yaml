@@ -1,0 +1,211 @@
+# capabilities/ai8x.yaml
+# SoT TOSA legality for ai8x lowering.
+# This is a *front-end legality* spec: it describes what we allow in the NPU core
+# window so partitioning does not split on harmless plumbing nodes.
+#
+# It is intentionally permissive on const/reshape/cast/etc. The YAML emitter is still
+# responsible for rejecting ops it cannot lower.
+
+ops:
+  # -------------------------
+  # Constants / shape helpers
+  # -------------------------
+
+  # scalar / vector constants (biases, shape vectors, etc.)
+  - op: tosa.const
+    outputs:
+      - dtypes: ["f32", "i8", "i32", "i64"]
+        rank: 0
+
+  - op: tosa.const
+    outputs:
+      - dtypes: ["f32", "i8", "i32", "i64"]
+        rank: 1
+
+  # tensor constants (weights, etc.)
+  - op: tosa.const
+    outputs:
+      - dtypes: ["f32", "i8", "i32"]
+        rank: 4
+
+  # torch-mlir emits this for shape materialization
+  - op: tosa.const_shape
+    outputs:
+      - dtypes: ["i32", "i64"]
+        rank: 1
+
+  # -------------------------
+  # Convolution
+  # -------------------------
+
+  # conv2d with (input, weight, bias)
+  - op: tosa.conv2d
+    inputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+      - dtypes: ["f32", "i8"]
+        rank: 4
+      - dtypes: ["f32", "i32"]
+        rank: 1
+    outputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+    attrs:
+      stride: {min: 1, max: 2}
+      dilation: {min: 1, max: 1}
+      pad: {min: 0, max: 2}
+    accumulator:
+      dtype: i32
+      max_abs: 2147483647
+
+  # conv2d variant torch-mlir emits with 5 operands.
+  # We accept extra operands as "plumbing" (typically quant/scale params).
+  - op: tosa.conv2d
+    inputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+      - dtypes: ["f32", "i8"]
+        rank: 4
+      - dtypes: ["f32", "i32"]
+        rank: 1
+      - dtypes: ["f32", "i8", "i32", "i64"]
+        rank: 1
+      - dtypes: ["f32", "i8", "i32", "i64"]
+        rank: 1
+    outputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+    attrs:
+      stride: {min: 1, max: 2}
+      dilation: {min: 1, max: 1}
+      pad: {min: 0, max: 2}
+    accumulator:
+      dtype: i32
+      max_abs: 2147483647
+
+  # -------------------------
+  # Pooling
+  # -------------------------
+
+  - op: tosa.max_pool2d
+    inputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+    outputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+    attrs:
+      kernel: {min: 1, max: 16}
+      stride: {min: 1, max: 16}
+      pad: {min: 0, max: 0}
+
+  - op: tosa.avg_pool2d
+    inputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+    outputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+    attrs:
+      kernel: {min: 1, max: 16}
+      stride: {min: 1, max: 16}
+      pad: {min: 0, max: 0}
+
+  # -------------------------
+  # Activations
+  # -------------------------
+
+  - op: tosa.relu
+    inputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+    outputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+
+  - op: tosa.clamp
+    inputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+    outputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+
+  - op: tosa.abs
+    inputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+    outputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+
+  # -------------------------
+  # Elementwise
+  # -------------------------
+
+  - op: tosa.add
+    inputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+      - dtypes: ["f32", "i8"]
+        rank: 4
+    outputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+
+  - op: tosa.sub
+    inputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+      - dtypes: ["f32", "i8"]
+        rank: 4
+    outputs:
+      - dtypes: ["f32", "i8"]
+        rank: 4
+
+  # -------------------------
+  # Reshape / transpose / casts (plumbing)
+  # -------------------------
+
+  # 4D -> 4D reshape
+  - op: tosa.reshape
+    inputs:
+      - dtypes: ["f32", "i8", "i32"]
+        rank: 4
+    outputs:
+      - dtypes: ["f32", "i8", "i32"]
+        rank: 4
+
+  # 4D -> 2D flatten reshape
+  - op: tosa.reshape
+    inputs:
+      - dtypes: ["f32", "i8", "i32"]
+        rank: 4
+    outputs:
+      - dtypes: ["f32", "i8", "i32"]
+        rank: 2
+
+  # 2D -> 2D reshape
+  - op: tosa.reshape
+    inputs:
+      - dtypes: ["f32", "i8", "i32"]
+        rank: 2
+    outputs:
+      - dtypes: ["f32", "i8", "i32"]
+        rank: 2
+
+  - op: tosa.transpose
+    inputs:
+      - dtypes: ["f32", "i8", "i32"]
+        rank: 4
+    outputs:
+      - dtypes: ["f32", "i8", "i32"]
+        rank: 4
+
+  - op: tosa.cast
+    inputs:
+      - dtypes: ["f32", "i8", "i32", "i64"]
+        rank: 4
+    outputs:
+      - dtypes: ["f32", "i8", "i32", "i64"]
+        rank: 4

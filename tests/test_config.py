@@ -81,3 +81,33 @@ def test_validate_core_config_unknown_format(tmp_path: Path, monkeypatch: pytest
     cfg = CoreConfig(target_format="does-not-exist", target_hardware="max78000", bit_width=8)
     with pytest.raises(ConfigError):
         validate_core_config(cfg, platforms)
+
+
+def test_load_formats_schema_and_validate_hardware(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_platforms(
+        tmp_path,
+        """
+        formats:
+          ai8x:
+            bit_widths: [1, 2, 4, 8]
+            compatible_hardware: [max78000, max78002]
+            flags:
+              fifo:
+                action: store_true
+        hardware:
+          max78000: { formats: [ai8x] }
+        """,
+    )
+    monkeypatch.chdir(tmp_path)
+    platforms = load_platforms_config()
+
+    validate_core_config(
+        CoreConfig(target_format="ai8x", target_hardware="max78000", bit_width=8),
+        platforms,
+    )
+
+    with pytest.raises(ConfigError):
+        validate_core_config(
+            CoreConfig(target_format="ai8x", target_hardware="hxwe2", bit_width=8),
+            platforms,
+        )

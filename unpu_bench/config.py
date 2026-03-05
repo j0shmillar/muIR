@@ -26,6 +26,8 @@ class PlatformSpec:
     name: str
     depends_on: tuple[str, ...]
     flags: Dict[str, FlagSpec]
+    bit_widths: tuple[Any, ...] = ()
+    compatible_hardware: tuple[str, ...] = ()
 
 
 def load_platforms_config(path: str = "platforms.yaml") -> Dict[str, PlatformSpec]:
@@ -41,8 +43,14 @@ def load_platforms_config(path: str = "platforms.yaml") -> Dict[str, PlatformSpe
     if not isinstance(raw, Mapping):
         raise ConfigError("platforms.yaml must contain a mapping at the top level.")
 
+    if "formats" in raw and isinstance(raw.get("formats"), Mapping):
+        raw_formats = raw["formats"]
+    else:
+        # Backward compatibility: format specs at top-level.
+        raw_formats = {k: v for k, v in raw.items() if k != "hardware"}
+
     platforms: Dict[str, PlatformSpec] = {}
-    for fmt_name, spec in raw.items():
+    for fmt_name, spec in raw_formats.items():
         if not isinstance(spec, Mapping):
             raise ConfigError(f"Platform '{fmt_name}' spec must be a mapping.")
 
@@ -60,9 +68,13 @@ def load_platforms_config(path: str = "platforms.yaml") -> Dict[str, PlatformSpe
             if not isinstance(flag_spec, Mapping):
                 raise ConfigError(f"Flag '{flag_name}' in '{fmt_name}' must be a mapping.")
             type_ = flag_spec.get("type")
+            action = flag_spec.get("action")
+            if type_ is None and action in {"store_true", "store_false"}:
+                type_ = "bool"
             if type_ is None:
                 raise ConfigError(
-                    f"Flag '{flag_name}' in '{fmt_name}' is missing required key 'type'."
+                    f"Flag '{flag_name}' in '{fmt_name}' is missing required key 'type' "
+                    "or a supported 'action'."
                 )
             if type_ not in {"int", "float", "str", "bool"}:
                 raise ConfigError(
@@ -80,6 +92,8 @@ def load_platforms_config(path: str = "platforms.yaml") -> Dict[str, PlatformSpe
             name=fmt_name,
             depends_on=depends,
             flags=flags,
+            bit_widths=tuple(spec.get("bit_widths", ()) or ()),
+            compatible_hardware=tuple(spec.get("compatible_hardware", ()) or ()),
         )
 
     log.debug("Loaded %d platforms from platforms.yaml", len(platforms))
@@ -110,6 +124,23 @@ def validate_core_config(core: CoreConfig, platforms: Dict[str, PlatformSpec]) -
             f"Unknown target_format '{core.target_format}'. "
             f"Known: {', '.join(sorted(platforms.keys()))}"
         )
+
+    platform = platforms[core.target_format]
+    if platform.compatible_hardware and core.target_hardware not in platform.compatible_hardware:
+        raise ConfigError(
+            f"target_hardware='{core.target_hardware}' is not compatible with "
+            f"target_format='{core.target_format}'. Allowed: "
+            f"{', '.join(sorted(platform.compatible_hardware))}"
+        )
+
+    if platform.bit_widths:
+        allowed_from_spec = set(platform.bit_widths)
+        if core.bit_width not in allowed_from_spec and str(core.bit_width) not in allowed_from_spec:
+            raise ConfigError(
+                f"bit_width={core.bit_width} is not supported for {core.target_format}. "
+                f"Supported: {sorted(platform.bit_widths, key=str)}"
+            )
+        return
 
     key = (core.target_format, core.target_hardware)
     if key not in _SUPPORTED_TARGETS:

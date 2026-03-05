@@ -10,6 +10,7 @@ from typing import Any, TYPE_CHECKING
 
 import torch
 
+from .devices import device as parse_ai8x_device
 from .bn_fuse import fuse_batchnorm_in_checkpoint
 from .errors import CompilationError
 
@@ -60,7 +61,7 @@ def _import_ai8x_quant_modules():
 
 def run_ai8x_bn_fuse_and_quantize(
     cfg: Any,
-    model_ckpt: str,
+    model_ckpt: str | None,
     out_dir: str | Path,
 ) -> Path:
     """
@@ -71,6 +72,9 @@ def run_ai8x_bn_fuse_and_quantize(
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if not model_ckpt:
+        raise CompilationError("ai8x: --model-ckpt is required for quantization.")
 
     original_ckpt_path = Path(model_ckpt)
     if not original_ckpt_path.is_file():
@@ -99,8 +103,23 @@ def run_ai8x_bn_fuse_and_quantize(
     # 2) Quantization
     ai8x_quant, tc = _import_ai8x_quant_modules()
 
-    device_name = getattr(cfg, "ai8x_device", None) or 85
-    device_name = 85
+    # PyTorch 2.6+ defaults to weights_only=True inside torch.load. ai8x
+    # checkpoints may carry optimizer classes, so allowlist Adam for trusted
+    # local checkpoints.
+    add_safe_globals = getattr(getattr(torch, "serialization", None), "add_safe_globals", None)
+    if add_safe_globals is not None:
+        try:
+            from torch.optim.adam import Adam
+
+            add_safe_globals([Adam])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ai8x: failed to add Adam to torch safe globals: %s", exc)
+
+    raw_device = getattr(cfg, "ai8x_device", None) or "MAX78000"
+    try:
+        device_name = parse_ai8x_device(str(raw_device))
+    except Exception as exc:  # noqa: BLE001
+        raise CompilationError(f"ai8x: unsupported device '{raw_device}'") from exc
     log.info(
         "ai8x: starting quantization of BN-fused checkpoint for device %s", device_name
     )

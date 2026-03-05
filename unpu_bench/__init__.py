@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from .version import __version__
 from .logging_setup import configure_logging
-from .config import load_platforms_config, validate_core_config, ConfigError
+from .config import ConfigError, load_platforms_config, validate_core_config
 from .metadata import write_run_metadata
-from .pipeline import CompileConfig, compile_model
 
 __all__ = [
     "__version__",
@@ -17,4 +16,21 @@ __all__ = [
     "write_run_metadata",
     "CompileConfig",
     "compile_model",
+    "convert",
 ]
+
+
+def __getattr__(name: str):
+    # Avoid importing heavy compile dependencies (torch, backend toolchains)
+    # on package import; load them only when requested.
+    if name in {"CompileConfig", "compile_model"}:
+        from .pipeline import CompileConfig, compile_model
+
+        if name == "CompileConfig":
+            return CompileConfig
+        return compile_model
+    if name == "convert":
+        from .api import convert
+
+        return convert
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

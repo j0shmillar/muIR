@@ -1,50 +1,45 @@
-# unpu_bench/pipeline.py
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import logging
-import sys
 import os
-from dataclasses import dataclass
-from typing import Any, Dict, Tuple
+import sys
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Dict, Tuple
 
 import numpy as np
 import torch
 from torch import nn
 
+from .ai8x_shim import install_ai8x_shim
+from .ai8x_yaml_from_tosa import emit_ai8x_yaml_and_sample
+from .backend_hardware import emit_hardware_artifacts
+from .backend_lowering import lower_program_for_backend
 from .config import PlatformSpec
-from .quant import run_ai8x_bn_fuse_and_quantize
-from .muir import build_program_from_onnx, write_program_json, Program, BackendArtifact
-from .passes import run_legality_check, run_partitioning
 from .errors import CompilationError
+from .muir import (
+    BackendArtifact,
+    Program,
+    build_program_from_onnx,
+    build_program_from_tflite_stub,
+    build_program_from_torch,
+    write_program_json,
+)
+from .passes import (
+    run_ir_canonicalization,
+    run_ir_validation,
+    run_legality_check,
+    run_partitioning,
+    run_tosa_legality_and_partitioning,
+)
+from .quant import run_ai8x_bn_fuse_and_quantize
+from .tosa_ir import load_tosa_module
+from .tosa_lowering import lower_torch_to_tosa_mlir
 
 log = logging.getLogger(__name__)
 
-from .ai8x_shim import install_ai8x_shim  # TODO maybe just install ai8x-training also
-
-import argparse
-
-
-def _import_ai8x_modules() -> tuple[Any, Any]:
-    """
-    Import ai8x-synthesis modules.
-
-    Expects ai8x-synthesis to be installed in this env, e.g.
-      pip install -e ../ai8x-synthesis
-    """
-    try:
-        # top-level module from ai8x-synthesis/quantize.py
-        quantize = importlib.import_module("izer.quantize")
-        # package module from ai8x-synthesis/izer/tornadocnn.py
-        tc = importlib.import_module("izer.tornadocnn")
-        return quantize, tc
-    except ImportError as exc:
-        raise CompilationError(
-            "Failed to import ai8x-synthesis modules (quantize, izer.tornadocnn).\n"
-            "Make sure ai8x-synthesis is installed in this Python environment, e.g.:\n"
-            "   pip install -e ../ai8x-synthesis"
-        ) from exc
 
 @dataclass
 class CompileConfig:
@@ -52,256 +47,277 @@ class CompileConfig:
     target_format: str
     target_hardware: str
     bit_width: int
+    out_dir: str
 
     # Model
-    model_py: str
-    model_class: str
-    model_ckpt: str | None
-    model_args: Dict[str, Any]
+    model_py: str | None = None
+    model_class: str | None = None
+    model_ckpt: str | None = None
+    model_args: Dict[str, Any] = field(default_factory=dict)
+    model_onnx: str | None = None
+    model_tflite: str | None = None
 
     # I/O
-    input_shape: str
-    output_shape: str
-    input_names: str
-    output_names: str
+    input_shape: str = ""
+    output_shape: str = ""
+    input_names: str = ""
+    output_names: str = ""
 
     # Data / quantization
-    data_sample: str | None
-
-    # Paths
-    out_dir: str
+    data_sample: str | None = None
     overwrite: bool = False
 
     # ai8x backend config
-    ai8x_root: str | None = None        # path to ai8x-synthesis checkout
-    ai8x_device: str | None = None      # "MAX78000" / "MAX78002"
-    ai8x_config_file: str | None = None # YAML
+    ai8x_root: str | None = None
+    ai8x_device: str | None = None
+    ai8x_config_file: str | None = None
     ai8x_prefix: str = "unpu_model"
+
+    # Pipeline mode
+    use_tosa: bool = False
 
     debug: bool = False
 
+    # Optional hardware artifact emission (vendor toolchain outputs)
+    emit_hardware_artifact: bool = False
+    backend_source_model: str | None = None
+    backend_tool_args: list[str] | None = None
+    backend_command: str | None = None
+    backend_output_glob: str | None = None
+    # CVI built-in flags
+    cvi_calibration_table: str | None = None
+    cvi_tolerance: float = 0.99
+    cvi_dynamic: bool = False
+    cvi_excepts: str | None = None
+    cvi_resize_dims: str | None = None
+    cvi_pixel_format: str | None = None
+    cvi_test_result: str | None = None
+    cvi_keep_aspect_ratio: bool = False
 
-# TO-ADD in izer.py
-        # fext = args.checkpoint_file.rsplit(sep='.', maxsplit=1)[1].lower()
-        # if fext == 'onnx':
-        #     # ONNX file selected
-        #     layers, weights, bias, output_shift, \
-        #         input_channels, output_channels = \
-        #         onnxcp.load(
-        #             args.checkpoint_file,
-        #             cfg['arch'],
-        #             params['quantization'],
-        #             params['bias_quantization'],
-        #             params['output_shift'],
-        #             params['kernel_size'],
-        #             params['operator'],
-        #             args.display_checkpoint,
-        #             args.no_bias,
-        #         )
-        # elif fext == 'json':
-        #     # IR Program JSON selected
-        #     layers, weights, bias, output_shift, \
-        #         input_channels, output_channels = \
-        #         ircp.load(
-        #             args.checkpoint_file,
-        #             cfg['arch'],
-        #             params['quantization'],
-        #             params['bias_quantization'],
-        #             params['output_shift'],
-        #             params['kernel_size'],
-        #             params['operator'],
-        #             args.display_checkpoint,
-        #             args.no_bias,
-        #         )
-        # else:
-        #     # PyTorch checkpoint file selected
-        #     layers, weights, bias, output_shift, \
-        #         input_channels, output_channels, final_scale = \
-        #         checkpoint.load(...)
-            
+
 def compile_model(cfg: CompileConfig, platforms: Dict[str, PlatformSpec]) -> None:
-    """Torch → (ai8x quantization) → ONNX → IR → passes → backend.
+    del platforms  # Platform constraints are validated at CLI-level.
 
-    For ai8x:
-      - Quantize the PyTorch checkpoint using ai8x.quantize.convert_checkpoint
-      - Load quantized weights into the Torch model
-      - Export quantized model to ONNX
-      - Build IR and run legality + partitioning
-      - Hand IR (and ONNX) to ai8x backend
-    """
     log.info(
-        "Compile start: format=%s hardware=%s bit_width=%d",
+        "Compile start: format=%s hardware=%s bit_width=%d use_tosa=%s",
         cfg.target_format,
         cfg.target_hardware,
         cfg.bit_width,
+        cfg.use_tosa,
     )
 
     _ensure_out_dir(cfg.out_dir, overwrite=cfg.overwrite)
     _sanity_check_files(cfg)
 
-    # 0) Quantization (ai8x only)
+    source = _resolve_model_source(cfg)
+    model = None
+    example_input = None
+    if source == "torch":
+        model = _load_model(cfg, ckpt_override=None)
+        example_input = _build_example_input(cfg)
+        program = build_program_from_torch(
+            model=model,
+            example_input=example_input,
+            default_backend=cfg.target_format,
+            target_hardware=cfg.target_hardware,
+            bit_width=cfg.bit_width,
+            metadata={
+                "input_shape": cfg.input_shape,
+                "output_shape": cfg.output_shape,
+                "input_names": cfg.input_names,
+                "output_names": cfg.output_names,
+                "target_format": cfg.target_format,
+                "pipeline_mode": "tosa" if cfg.use_tosa else "ir",
+            },
+        )
+    elif source == "onnx":
+        assert cfg.model_onnx
+        program = build_program_from_onnx(
+            cfg.model_onnx,
+            default_backend=cfg.target_format,
+            target_hardware=cfg.target_hardware,
+            bit_width=cfg.bit_width,
+            metadata={
+                "target_format": cfg.target_format,
+                "pipeline_mode": "ir",
+                "frontend": "onnx",
+            },
+        )
+    else:
+        assert cfg.model_tflite
+        program = build_program_from_tflite_stub(
+            cfg.model_tflite,
+            default_backend=cfg.target_format,
+            target_hardware=cfg.target_hardware,
+            bit_width=cfg.bit_width,
+            metadata={
+                "target_format": cfg.target_format,
+                "pipeline_mode": "ir",
+            },
+        )
+
+    run_ir_canonicalization(program)
+    run_ir_validation(program)
+
+    tosa_mod = None
+    if cfg.use_tosa:
+        if source != "torch" or model is None or example_input is None:
+            raise CompilationError("--use-tosa currently requires a torch model source (--model-py/--model-class).")
+        tosa_mod = _run_tosa_flow(cfg, program, model, example_input)
+    else:
+        ir_caps_path = (
+            Path(__file__).resolve().parents[1]
+            / "unpu_bench"
+            / "capabilities"
+            / f"ir_{cfg.target_format}.yaml"
+        )
+        if not ir_caps_path.exists():
+            raise CompilationError(
+                f"Missing IR capability schema for backend '{cfg.target_format}': {ir_caps_path}"
+            )
+        run_legality_check(program, backend=cfg.target_format, caps_path=ir_caps_path)
+        run_partitioning(program, backend=cfg.target_format, fallback_backend="cpu")
+
+    if cfg.target_format == "ai8x":
+        if source != "torch" or example_input is None:
+            raise CompilationError("ai8x backend currently requires torch model source (--model-py/--model-class).")
+        _configure_ai8x_inputs(cfg, tosa_mod, example_input, program)
+
     quant_ckpt_path: str | None = None
     if cfg.target_format == "ai8x":
-        log.info("Running quantization on checkpoint before ONNX/IR export...")
-        quant_ckpt_path = run_ai8x_bn_fuse_and_quantize(
-            cfg,
-            model_ckpt=cfg.model_ckpt,
-            out_dir=cfg.out_dir,
+        log.info("Running ai8x quantization on checkpoint...")
+        quant_ckpt_path = str(
+            run_ai8x_bn_fuse_and_quantize(
+                cfg,
+                model_ckpt=cfg.model_ckpt,
+                out_dir=cfg.out_dir,
+            )
         )
         log.info("Quantized checkpoint written to %s", quant_ckpt_path)
 
-    # 1) Load model (with quantized weights if available)
-    model = _load_model(cfg, ckpt_override=quant_ckpt_path)
+    if cfg.target_format == "ai8x":
+        run_ai8x_backend(program, cfg)
+    else:
+        artifacts = lower_program_for_backend(
+            program,
+            target_format=cfg.target_format,
+            out_dir=cfg.out_dir,
+        )
+        for artifact in artifacts:
+            program.add_artifact(artifact)
+        if cfg.emit_hardware_artifact:
+            if not cfg.backend_source_model:
+                # default source-model to the frontend artifact when possible
+                if cfg.model_tflite:
+                    cfg.backend_source_model = cfg.model_tflite
+                elif cfg.model_onnx:
+                    cfg.backend_source_model = cfg.model_onnx
+            hw_arts = emit_hardware_artifacts(cfg)
+            for artifact in hw_arts:
+                program.add_artifact(artifact)
 
-    # 2) Build example input
-    example_input = _build_example_input(cfg) # TODO fix - use 'real' inputs
+    program_json_path = write_program_json(program, cfg.out_dir)
+    log.info("Compile done.")
+    log.info("  Program:  %s", program_json_path)
 
-    # 3) Frontend: Torch → ONNX
-    onnx_path = os.path.join(cfg.out_dir, "model.onnx")
-    _export_model_to_onnx(cfg, model, example_input, onnx_path)
 
-    # 4) IR import: ONNX → Program
-    program = build_program_from_onnx(
-        onnx_path=onnx_path,
-        default_backend=cfg.target_format,  # usually "ai8x"
-        target_hardware=cfg.target_hardware,
-        bit_width=cfg.bit_width,
-        metadata={
-            "input_shape": cfg.input_shape,
-            "output_shape": cfg.output_shape,
-            "input_names": cfg.input_names,
-            "output_names": cfg.output_names,
-            "target_format": cfg.target_format,
-        },
+def _run_tosa_flow(
+    cfg: CompileConfig,
+    program: Program,
+    model: nn.Module,
+    example_input: torch.Tensor,
+):
+    tosa_path = os.path.join(cfg.out_dir, "module.tosa.mlir")
+    lr = lower_torch_to_tosa_mlir(
+        model=model,
+        example_inputs=[example_input],
+        out_path=tosa_path,
+        canonicalize=True,
+    )
+    log.info(
+        "TOSA MLIR written: %s (toolchain=%s canon=%s)",
+        lr.tosa_mlir_path,
+        lr.toolchain,
+        lr.canonicalized,
     )
 
-    # 5) Passes: legality + partitioning
-    run_legality_check(program)
-    # NOTE: we no longer run a separate IR quantization pass for ai8x here;
-    #       real quantization has already been done by ai8x's convert_checkpoint.
-    run_partitioning(program)
+    tosa_mod = load_tosa_module(lr.tosa_mlir_path)
 
-    print("here1")
-
-    # 6) Backend compilation
-    if cfg.target_format == "ai8x":
-        run_ai8x_backend(program, cfg, onnx_path)
-    else:
-        log.warning("No backend implementation for target_format=%s", cfg.target_format)
-
-    print("here2")
-
-    # 7) Serialize Program
-    program_json_path = write_program_json(program, cfg.out_dir)
-
-    print("here3")
-
-    log.info("Compile done.")
-    log.info("  ONNX:     %s", onnx_path)
-    log.info("  Program:  %s", program_json_path)
-    for art in program.backend_artifacts:
-        log.info("  Artifact: backend=%s type=%s path=%s",
-                 art.backend, art.artifact_type, art.path)
-
-
-# TODO
-# - add a small pass that reads layer-wise quant config from the yaml (or from the quantized checkpoint) 
-#   and annotates tensors with quantparams to match, w/o changing the actual quantization 
-#   (since ai8x has already done it)
-# - update to support full range of quant args
-# - update to support more than INT8 quantization
-# - update to quantize "in memory" i.e. don't resave the model checkpoint post-quantization
-
-def _quantize_checkpoint_ai8x(cfg: CompileConfig) -> str:
-    """Quantize the model checkpoint using ai8x's quantize.py (convert_checkpoint).
-
-    Returns:
-        Path to the *quantized* checkpoint file.
-    """
-    if not cfg.model_ckpt:
+    caps_path = (
+        Path(__file__).resolve().parents[1]
+        / "unpu_bench"
+        / "capabilities"
+        / f"{cfg.target_format}.yaml"
+    )
+    if not caps_path.exists():
         raise CompilationError(
-            "ai8x quantization requested but --model-ckpt is not provided."
-        )
-    if not cfg.ai8x_config_file:
-        raise CompilationError(
-            "ai8x quantization requires --ai8x-config-file (YAML network config)."
+            f"Missing capability schema for backend '{cfg.target_format}': {caps_path}"
         )
 
-    quant_ckpt = os.path.join(cfg.out_dir, "model_quantized.pth")
+    run_tosa_legality_and_partitioning(
+        program=program,
+        tosa=tosa_mod,
+        caps_path=caps_path,
+        backend=cfg.target_format,
+        out_dir=cfg.out_dir,
+    )
+    return tosa_mod
 
-    # --- import ai8x modules ---
-    # TODO move into own function
-    try:
-        import importlib
-        quantize = importlib.import_module("izer.quantize")
-        tc = importlib.import_module("izer.tornadocnn")
-    except ImportError as exc:
-        raise CompilationError(
-            "Failed to import ai8x-synthesis modules (quantize, izer.tornadocnn). "
-            "Make sure ai8x-synthesis is installed, e.g.:\n"
-            "  pip install -e ../ai8x-synthesis"
-        ) from exc
 
-    # --- PyTorch 2.6+ safe_globals workaround ---
-    import torch
+def _configure_ai8x_inputs(
+    cfg: CompileConfig,
+    tosa_mod,
+    example_input: torch.Tensor,
+    program: Program,
+) -> None:
+    if cfg.use_tosa:
+        if tosa_mod is None:
+            raise CompilationError("Internal error: TOSA flow enabled but module is missing")
 
-    add_safe_globals = getattr(getattr(torch, "serialization", None), "add_safe_globals", None)
-    if add_safe_globals is not None:
-        try:
-            from torch.optim.adam import Adam
-            # Allowlist the Adam class so torch.load(...) inside convert_checkpoint succeeds
-            add_safe_globals([Adam])
-        except Exception as e:  # noqa: BLE001
-            # Not fatal: if this fails, we just fall back to default behaviour.
-            logging.getLogger(__name__).warning(
-                "Failed to add Adam to torch.serialization safe globals: %s", e
+        tosa_parts = program.metadata.get("tosa_partitions", {})
+        core_key = f"{cfg.target_format}_core"
+        core_range = tosa_parts.get(core_key)
+        if core_range is None:
+            raise CompilationError(
+                f"No TOSA core range recorded for {core_key}. "
+                "Legality/partitioning did not produce an ai8x core segment."
             )
 
-    # --- build args for convert_checkpoint ---
-    import argparse
-    cfg.ai8x_device = 85 # TODO fix
-    args = argparse.Namespace(
-        config_file=cfg.ai8x_config_file,
-        device=cfg.ai8x_device or 85,
-        clip_mode=None,        # use MAX_BIT_SHIFT heuristic
-        qat_weight_bits=None,
-        verbose=cfg.debug,
-        scale=None,
-        stddev=None,
-    )
-
-    # configure device for quantizer
-    tc.dev = tc.get_device(args.device)
-
-    try:
-        quantize.convert_checkpoint(cfg.model_ckpt, quant_ckpt, args)
-    except Exception as exc:  # noqa: BLE001
-        raise CompilationError(
-            f"ai8x convert_checkpoint failed while quantizing '{cfg.model_ckpt}': {exc}"
-        ) from exc
-
-    if not os.path.exists(quant_ckpt):
-        raise CompilationError(
-            "ai8x quantization reported success but quantized checkpoint file "
-            f"'{quant_ckpt}' does not exist."
+        gen_dir = Path(cfg.out_dir) / "ai8x_autogen"
+        res = emit_ai8x_yaml_and_sample(
+            tosa=tosa_mod,
+            core_range=tuple(core_range),
+            out_dir=gen_dir,
+            arch=cfg.ai8x_prefix or "unpu_model",
+            dataset="cifar100",
+            device_name=str(cfg.ai8x_device or "MAX78000"),
+            example_input=example_input,
         )
-     
-    return quant_ckpt
 
-# ---------- ai8x backend ----------
+        cfg.ai8x_config_file = str(res.yaml_path)
+        cfg.data_sample = str(res.sample_path)
+        log.info("Autogenerated ai8x YAML: %s", cfg.ai8x_config_file)
+        log.info("Autogenerated sample:   %s", cfg.data_sample)
+        return
+
+    if not cfg.ai8x_config_file:
+        raise CompilationError(
+            "ai8x backend requires --ai8x-config-file when --use-tosa is not enabled."
+        )
+
 
 def _build_ai8x_argv(cfg: CompileConfig, checkpoint_file: str, ai8x_dir: Path) -> list[str]:
-    """
-    Build a rich argv list for ai8x-synthesis izer, mirroring the Namespace
-    we previously hand-constructed.
-    """
-    argv: list[str] = ["ai8x-izer"]  # argv[0], cosmetic
+    argv: list[str] = ["ai8x-izer"]
+
+    argv += ["--device", str(cfg.ai8x_device or "MAX78000")]
+    if not cfg.ai8x_config_file:
+        raise CompilationError(
+            "ai8x backend requires a YAML config. Either provide --ai8x-config-file "
+            "or enable --use-tosa for auto-generation."
+        )
+    argv += ["--config-file", str(cfg.ai8x_config_file)]
 
     argv += [
-        "--device",
-        str(cfg.ai8x_device or "MAX78000"),
-        "--config-file",
-        str(cfg.ai8x_config_file),
         "--checkpoint-file",
         str(checkpoint_file),
         "--embedded-code",
@@ -318,44 +334,39 @@ def _build_ai8x_argv(cfg: CompileConfig, checkpoint_file: str, ai8x_dir: Path) -
     if cfg.debug:
         argv.append("--display-checkpoint")
 
-    # Everything is guaranteed to be a string now
     return argv
 
 
-
-def run_ai8x_backend(program: Program, cfg: CompileConfig, onnx_path: str) -> None:
-    """
-    Invoke ai8x-synthesis' izer backend (izer/izer.py) to generate the C project,
-    preserving full functionality.
-
-    We:
-      - import `izer.izer.main`,
-      - build a rich CLI argv from CompileConfig,
-      - temporarily replace sys.argv,
-      - call main() and map SystemExit into CompilationError,
-      - then register the generated project as a BackendArtifact.
-    """
+def run_ai8x_backend(program: Program, cfg: CompileConfig) -> None:
     try:
         izer_mod = importlib.import_module("izer.izer")
     except ImportError as exc:
-        raise CompilationError(
-            "Failed to import ai8x-synthesis 'izer.izer' module.\n"
-            "Make sure ai8x-synthesis is installed and importable, e.g.:\n"
-            "  cd ../ai8x-synthesis && pip install -e ."
-        ) from exc
+        repo_root = Path(__file__).resolve().parents[1]
+        ai8x_synth = repo_root / "ai8x-synthesis"
+        if ai8x_synth.is_dir() and str(ai8x_synth) not in sys.path:
+            sys.path.insert(0, str(ai8x_synth))
+        try:
+            izer_mod = importlib.import_module("izer.izer")
+        except ImportError as inner_exc:
+            raise CompilationError(
+                "Failed to import ai8x-synthesis 'izer.izer' module.\n"
+                "Make sure ai8x-synthesis is installed or available as sibling checkout, e.g.:\n"
+                "  cd ../ai8x-synthesis && pip install -e ."
+            ) from inner_exc
 
     out_dir = Path(cfg.out_dir)
     ai8x_dir = out_dir / "ai8x"
     ai8x_dir.mkdir(parents=True, exist_ok=True)
 
-    # Prefer quantized checkpoint, then original ckpt, then ONNX
     quant_ckpt = out_dir / "model_quantized.pth"
     if quant_ckpt.exists():
         checkpoint_file = str(quant_ckpt)
     elif cfg.model_ckpt:
         checkpoint_file = cfg.model_ckpt
     else:
-        checkpoint_file = onnx_path  # izer can also consume ONNX
+        raise CompilationError(
+            "ai8x backend requires a quantized or source checkpoint; no ONNX fallback is used."
+        )
 
     argv = _build_ai8x_argv(cfg, checkpoint_file, ai8x_dir)
     log.info("Invoking ai8x-synthesis izer with argv: %s", " ".join(map(str, argv)))
@@ -363,7 +374,7 @@ def run_ai8x_backend(program: Program, cfg: CompileConfig, onnx_path: str) -> No
     old_argv = sys.argv
     sys.argv = argv
     try:
-        izer_mod.main()  # their CLI entrypoint; uses commandline.get_parser() internally
+        izer_mod.main()
     except SystemExit as e:
         code = int(e.code) if isinstance(e.code, int) else 1
         if code != 0:
@@ -371,7 +382,6 @@ def run_ai8x_backend(program: Program, cfg: CompileConfig, onnx_path: str) -> No
     finally:
         sys.argv = old_argv
 
-    # If we got here, izer completed successfully and should have created a project.
     project_dir = ai8x_dir / (cfg.ai8x_prefix or "unpu_model")
     if not project_dir.is_dir():
         raise CompilationError(
@@ -392,8 +402,6 @@ def run_ai8x_backend(program: Program, cfg: CompileConfig, onnx_path: str) -> No
     )
 
 
-# ---------- Helper functions (unchanged from your earlier version) ----------
-
 def _ensure_out_dir(out_dir: str, overwrite: bool) -> None:
     if os.path.exists(out_dir) and os.listdir(out_dir) and not overwrite:
         raise CompilationError(
@@ -404,11 +412,21 @@ def _ensure_out_dir(out_dir: str, overwrite: bool) -> None:
 
 def _sanity_check_files(cfg: CompileConfig) -> None:
     missing: list[str] = []
+    source = _resolve_model_source(cfg)
+    required_ai8x_yaml = cfg.target_format == "ai8x" and not cfg.use_tosa
+    required_backend_source = (
+        cfg.emit_hardware_artifact
+        and cfg.target_format in {"tflm", "vela", "cvi", "eiq"}
+        and not (cfg.backend_source_model or cfg.model_onnx or cfg.model_tflite)
+    )
     for label, path, required in [
-        ("model_py", cfg.model_py, True),
-        ("model_ckpt", cfg.model_ckpt, False),
+        ("model_py", cfg.model_py, source == "torch"),
+        ("model_onnx", cfg.model_onnx, source == "onnx"),
+        ("model_tflite", cfg.model_tflite, source == "tflite"),
+        ("model_ckpt", cfg.model_ckpt, cfg.target_format == "ai8x"),
         ("data_sample", cfg.data_sample, False),
-        ("ai8x_config_file", cfg.ai8x_config_file if cfg.target_format == "ai8x" else None, False),
+        ("ai8x_config_file", cfg.ai8x_config_file, required_ai8x_yaml),
+        ("backend_source_model", cfg.backend_source_model, required_backend_source),
     ]:
         if not path:
             if required:
@@ -419,25 +437,52 @@ def _sanity_check_files(cfg: CompileConfig) -> None:
     if missing:
         raise CompilationError("Missing required files: " + ", ".join(missing))
 
+    if source == "torch":
+        required_text = [
+            ("input_shape", cfg.input_shape),
+            ("input_names", cfg.input_names),
+            ("output_names", cfg.output_names),
+        ]
+        for label, val in required_text:
+            if not val:
+                raise CompilationError(f"Missing required argument for torch source: --{label.replace('_', '-')}")
+
+
+def _resolve_model_source(cfg: CompileConfig) -> str:
+    has_torch = bool(cfg.model_py and cfg.model_class)
+    has_onnx = bool(cfg.model_onnx)
+    has_tflite = bool(cfg.model_tflite)
+    count = int(has_torch) + int(has_onnx) + int(has_tflite)
+    if count == 0:
+        raise CompilationError(
+            "No model source provided. Use either --model-py/--model-class, --model-onnx, or --model-tflite."
+        )
+    if count > 1:
+        raise CompilationError(
+            "Ambiguous model source: provide exactly one of torch source, --model-onnx, or --model-tflite."
+        )
+    if has_torch:
+        return "torch"
+    if has_onnx:
+        return "onnx"
+    return "tflite"
+
 
 def _import_module_from_file(path: str):
-    spec = importlib.util.spec_from_file_location("unpu_model_module", path)
+    path = os.path.abspath(path)
+    name = os.path.splitext(os.path.basename(path))[0]
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise CompilationError(f"Cannot import module from {path}")
+        raise CompilationError(f"Failed to create module spec for {path}")
     module = importlib.util.module_from_spec(spec)
-    sys.modules["unpu_model_module"] = module
-    spec.loader.exec_module(module)  # type: ignore[call-arg]
+    spec.loader.exec_module(module)  # type: ignore[arg-type]
     return module
 
 
 def _load_model(cfg: CompileConfig, ckpt_override: str | None = None) -> nn.Module:
-    # Ensure ai8x is importable for ai8x model zoo nets
-    try:
-        import ai8x  # type: ignore[import]
-        log.debug("Found real ai8x module: %s", ai8x)
-    except ImportError:
-        install_ai8x_shim()
-        log.debug("Installed ai8x shim module for model import.")
+    install_ai8x_shim()
+    if not cfg.model_py or not cfg.model_class:
+        raise CompilationError("Torch model source requires both --model-py and --model-class.")
 
     module = _import_module_from_file(cfg.model_py)
     if not hasattr(module, cfg.model_class):
@@ -461,17 +506,6 @@ def _load_model(cfg: CompileConfig, ckpt_override: str | None = None) -> nn.Modu
     return model
 
 
-def _import_module_from_file(path: str):
-    path = os.path.abspath(path)
-    name = os.path.splitext(os.path.basename(path))[0]
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise CompilationError(f"Failed to create module spec for {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)  # type: ignore[arg-type]
-    return module
-
-
 def _parse_shape(shape_str: str) -> Tuple[int, ...]:
     try:
         return tuple(int(x) for x in shape_str.strip().split())
@@ -488,29 +522,3 @@ def _build_example_input(cfg: CompileConfig) -> torch.Tensor:
         return t.float()
     shape = _parse_shape(cfg.input_shape)
     return torch.randn(*shape, dtype=torch.float32)
-
-
-def _export_model_to_onnx(
-    cfg: CompileConfig,
-    model: nn.Module,
-    example_input: torch.Tensor,
-    onnx_path: str,
-) -> None:
-    model.eval().to("cpu")
-    input_names = [s.strip() for s in cfg.input_names.split(",") if s.strip()]
-    output_names = [s.strip() for s in cfg.output_names.split(",") if s.strip()]
-    if len(input_names) != 1:
-        raise CompilationError("Current exporter only supports a single input tensor")
-    import torch.onnx
-
-    torch.onnx.export(
-        model,
-        example_input,
-        onnx_path,
-        input_names=input_names,
-        output_names=output_names or None,
-        opset_version=17,
-        dynamic_axes=None,
-    )
-    if not os.path.exists(onnx_path):
-        raise CompilationError("ONNX export succeeded but file not found afterward")

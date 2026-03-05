@@ -1,0 +1,37 @@
+{
+  "backend": "cvi",
+  "graph": {
+    "inputs": [
+      "x"
+    ],
+    "name": "TinyNet",
+    "num_ops": 2,
+    "num_tensors": 5,
+    "outputs": [
+      "op_1_out0"
+    ]
+  },
+  "metadata": {
+    "bit_width": 8,
+    "frontend": "torch_fx",
+    "input_names": "input",
+    "input_shape": "1 3 8 8",
+    "ir_canonicalized": true,
+    "ir_schema_version": 1,
+    "output_names": "output",
+    "output_shape": "1 4 8 8",
+    "pipeline_mode": "ir",
+    "target_format": "cvi",
+    "target_hardware": "bm1684x"
+  },
+  "partitions": [
+    {
+      "backend": "cvi",
+      "id": "cvi_core",
+      "op_ids": [
+        "op_0",
+        "op_1"
+      ]
+    }
+  ]
+}
