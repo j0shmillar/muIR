@@ -1,23 +1,19 @@
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, List
 
 from .errors import CompilationError
-from .muir import Program, Partition  # you can keep Program as your “container”
+from .muir import Program, Partition
 from .capabilities.ir_schema import (
     IRCapabilityDB,
     check_ir_op_legality,
     load_ir_capabilities,
 )
-from .tosa_ir import TosaModule, TosaOpSig
-from .capabilities.schema import CapabilityDB, load_capabilities, check_op_legality
-from .repro import write_repro_mlir
 
 
 # ---------- 0) IR Canonicalization ----------
+
 
 def _infer_default_layout(shape: List[int]) -> str | None:
     if len(shape) == 4:
@@ -31,7 +27,9 @@ def _infer_default_layout(shape: List[int]) -> str | None:
     return None
 
 
-def _as_int_list(value: Any, *, expected_len: int | None = None, default: List[int] | None = None) -> List[int]:
+def _as_int_list(
+    value: Any, *, expected_len: int | None = None, default: List[int] | None = None
+) -> List[int]:
     if isinstance(value, int):
         out = [int(value)]
     elif isinstance(value, (list, tuple)):
@@ -83,13 +81,19 @@ def _canonicalize_op(op_id: str, program: Program) -> None:
         attrs["axis"] = attrs.pop("axes")
 
     if op.kind in {"Conv", "DepthwiseConv2d"}:
-        attrs["strides"] = _as_int_list(attrs.get("strides"), expected_len=2, default=[1, 1])
-        attrs["dilations"] = _as_int_list(attrs.get("dilations"), expected_len=2, default=[1, 1])
+        attrs["strides"] = _as_int_list(
+            attrs.get("strides"), expected_len=2, default=[1, 1]
+        )
+        attrs["dilations"] = _as_int_list(
+            attrs.get("dilations"), expected_len=2, default=[1, 1]
+        )
         pads = _as_int_list(attrs.get("pads"), default=[0, 0, 0, 0])
         if len(pads) == 2:
             pads = [pads[0], pads[1], pads[0], pads[1]]
         attrs["pads"] = _as_int_list(pads, expected_len=4, default=[0, 0, 0, 0])
-        attrs["kernel_shape"] = _as_int_list(attrs.get("kernel_shape"), expected_len=2, default=[1, 1])
+        attrs["kernel_shape"] = _as_int_list(
+            attrs.get("kernel_shape"), expected_len=2, default=[1, 1]
+        )
         attrs["group"] = int(attrs.get("group", 1))
 
         # Infer depthwise from group/input channels where available.
@@ -101,8 +105,12 @@ def _canonicalize_op(op_id: str, program: Program) -> None:
                     op.kind = "DepthwiseConv2d"
 
     if op.kind in {"MaxPool", "AveragePool"}:
-        attrs["kernel_shape"] = _as_int_list(attrs.get("kernel_shape"), expected_len=2, default=[1, 1])
-        attrs["strides"] = _as_int_list(attrs.get("strides"), expected_len=2, default=[1, 1])
+        attrs["kernel_shape"] = _as_int_list(
+            attrs.get("kernel_shape"), expected_len=2, default=[1, 1]
+        )
+        attrs["strides"] = _as_int_list(
+            attrs.get("strides"), expected_len=2, default=[1, 1]
+        )
         pads = _as_int_list(attrs.get("pads"), default=[0, 0, 0, 0])
         if len(pads) == 2:
             pads = [pads[0], pads[1], pads[0], pads[1]]
@@ -125,7 +133,9 @@ def _canonicalize_op(op_id: str, program: Program) -> None:
         rhs = g.tensors.get(op.inputs[1])
         if lhs and rhs and lhs.type.shape and rhs.type.shape:
             attrs["broadcast"] = lhs.type.shape != rhs.type.shape
-            attrs["broadcast_semantics"] = "numpy" if _broadcastable(lhs.type.shape, rhs.type.shape) else "none"
+            attrs["broadcast_semantics"] = (
+                "numpy" if _broadcastable(lhs.type.shape, rhs.type.shape) else "none"
+            )
 
     op.attrs = attrs
 
@@ -144,6 +154,7 @@ def run_ir_canonicalization(program: Program) -> None:
 
 # ---------- 0) IR Validation ----------
 
+
 def run_ir_validation(program: Program) -> None:
     """Backend-agnostic structural validation for unified IR."""
     g = program.graph
@@ -152,19 +163,27 @@ def run_ir_validation(program: Program) -> None:
     seen: set[str] = set()
     for op_id in g.op_order:
         if op_id in seen:
-            raise CompilationError(f"IR validation failed: duplicate op id in op_order: {op_id}")
+            raise CompilationError(
+                f"IR validation failed: duplicate op id in op_order: {op_id}"
+            )
         seen.add(op_id)
         if op_id not in g.ops:
-            raise CompilationError(f"IR validation failed: op_order references missing op: {op_id}")
+            raise CompilationError(
+                f"IR validation failed: op_order references missing op: {op_id}"
+            )
 
     for op_id in g.ops:
         if op_id not in seen:
-            raise CompilationError(f"IR validation failed: op exists but is absent from op_order: {op_id}")
+            raise CompilationError(
+                f"IR validation failed: op exists but is absent from op_order: {op_id}"
+            )
 
     # Tensor existence for graph interfaces
     for tid in g.inputs + g.outputs + g.initializers:
         if tid not in g.tensors:
-            raise CompilationError(f"IR validation failed: graph references missing tensor '{tid}'")
+            raise CompilationError(
+                f"IR validation failed: graph references missing tensor '{tid}'"
+            )
 
     # Op IO consistency and producer/consumer links
     for op_id in g.op_order:
@@ -174,7 +193,9 @@ def run_ir_validation(program: Program) -> None:
 
         for tid in op.inputs:
             if tid not in g.tensors:
-                raise CompilationError(f"IR validation failed: op '{op_id}' input tensor missing: {tid}")
+                raise CompilationError(
+                    f"IR validation failed: op '{op_id}' input tensor missing: {tid}"
+                )
             t = g.tensors[tid]
             if op_id not in t.consumers:
                 raise CompilationError(
@@ -183,7 +204,9 @@ def run_ir_validation(program: Program) -> None:
 
         for tid in op.outputs:
             if tid not in g.tensors:
-                raise CompilationError(f"IR validation failed: op '{op_id}' output tensor missing: {tid}")
+                raise CompilationError(
+                    f"IR validation failed: op '{op_id}' output tensor missing: {tid}"
+                )
             t = g.tensors[tid]
             if t.producer != op_id:
                 raise CompilationError(
@@ -194,15 +217,21 @@ def run_ir_validation(program: Program) -> None:
     for tid in g.inputs:
         t = g.tensors[tid]
         if t.producer is not None:
-            raise CompilationError(f"IR validation failed: input tensor '{tid}' has producer '{t.producer}'")
+            raise CompilationError(
+                f"IR validation failed: input tensor '{tid}' has producer '{t.producer}'"
+            )
     for tid in g.initializers:
         t = g.tensors[tid]
         if not t.is_constant:
-            raise CompilationError(f"IR validation failed: initializer '{tid}' must be marked constant")
+            raise CompilationError(
+                f"IR validation failed: initializer '{tid}' must be marked constant"
+            )
     # Canonical tensor semantics: rank-4 tensors should carry a layout.
     for tid, t in g.tensors.items():
         if len(t.type.shape) == 4 and not t.type.layout:
-            raise CompilationError(f"IR validation failed: rank-4 tensor '{tid}' missing layout")
+            raise CompilationError(
+                f"IR validation failed: rank-4 tensor '{tid}' missing layout"
+            )
 
 
 # ---------- 1) Legality over unified IR ----------
@@ -240,6 +269,7 @@ def run_legality_check(
 
 # ---------- 2) Partitioning ----------
 
+
 def run_partitioning(
     program: Program,
     *,
@@ -275,7 +305,11 @@ def run_partitioning(
     except ValueError:
         # No accelerator ops at all: everything on fallback backend
         program.partitions = [
-            Partition(id=f"{fallback_backend}_full", backend=fallback_backend, op_ids=ops_order),
+            Partition(
+                id=f"{fallback_backend}_full",
+                backend=fallback_backend,
+                op_ids=ops_order,
+            ),
         ]
         return
 
@@ -325,104 +359,3 @@ def run_partitioning(
         )
 
     program.partitions = partitions
-
-@dataclass(frozen=True)
-class LegalityRecord:
-    index: int
-    op: str
-    legal: bool
-    reasons: List[str]
-    line_no: int
-    line: str
-    repro: str | None
-
-
-def run_tosa_legality_and_partitioning(
-    *,
-    program: Program,
-    tosa: TosaModule,
-    caps_path: str | Path,
-    backend: str,
-    out_dir: str | Path,
-) -> None:
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    cap: CapabilityDB = load_capabilities(caps_path, backend=backend)
-
-    records: List[LegalityRecord] = []
-    repro_dir = out_dir / "repros"
-
-    for idx, op in enumerate(tosa.ops):
-        ok, reasons = check_op_legality(op, cap)
-        repro_path = None
-        if not ok:
-            repro_path = str(write_repro_mlir(op, repro_dir, name=f"op{idx}_{op.op_name.replace('.', '_')}"))
-
-        records.append(LegalityRecord(
-            index=idx,
-            op=op.op_name,
-            legal=ok,
-            reasons=reasons,
-            line_no=op.location[0],
-            line=op.location[1],
-            repro=repro_path,
-        ))
-
-    # Write legality.json / legality.txt
-    legality_json = out_dir / "legality.json"
-    legality_txt = out_dir / "legality.txt"
-
-    legality_json.write_text(
-        json.dumps([r.__dict__ for r in records], indent=2, sort_keys=False),
-        encoding="utf-8",
-    )
-
-    lines = []
-    for r in records:
-        if r.legal:
-            continue
-        lines.append(f"[{r.index}] {r.op} at {r.line_no}:")
-        for reason in r.reasons:
-            lines.append(f"  - {reason}")
-        if r.repro:
-            lines.append(f"  repro: {r.repro}")
-        lines.append("")
-    legality_txt.write_text("\n".join(lines), encoding="utf-8")
-
-    # Partition: single NPU core segment + CPU prefix/suffix (same rule as before),
-    # but now using TOSA legality flags.
-    kinds = ["npu" if r.legal else "cpu" for r in records]
-
-    try:
-        first_npu = kinds.index("npu")
-        last_npu = len(kinds) - 1 - kinds[::-1].index("npu")
-    except ValueError:
-        program.partitions = [Partition(id="cpu_full", backend="cpu", op_ids=[])]
-        program.metadata["tosa_partitions"] = {"cpu_full": [0, len(records)]}
-        return
-
-    for i in range(first_npu, last_npu + 1):
-        if kinds[i] != "npu":
-            raise CompilationError(
-                f"TOSA op[{i}] is illegal for {backend} but appears inside the core NPU window.\n"
-                f"See {legality_txt} and repros in {repro_dir}."
-            )
-
-    parts: List[Partition] = []
-    # op_ids is left empty because your Program currently enumerates ONNX-import ops.
-    # The SoT partitioning is stored in metadata ranges; you can migrate fully later.
-    if first_npu > 0:
-        parts.append(Partition(id="cpu_prefix", backend="cpu", op_ids=[]))
-    parts.append(Partition(id=f"{backend}_core", backend=backend, op_ids=[]))
-    if last_npu < len(records) - 1:
-        parts.append(Partition(id="cpu_suffix", backend="cpu", op_ids=[]))
-
-    program.partitions = parts
-    program.metadata["tosa_partitions"] = {
-        "cpu_prefix": [0, first_npu] if first_npu > 0 else None,
-        f"{backend}_core": [first_npu, last_npu + 1],
-        "cpu_suffix": [last_npu + 1, len(records)] if last_npu < len(records) - 1 else None,
-    }
-    program.metadata["tosa_legality"] = str(legality_json)
-    program.metadata["tosa_repros_dir"] = str(repro_dir)

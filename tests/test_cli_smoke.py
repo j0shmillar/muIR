@@ -72,7 +72,7 @@
 #     assert (out_dir / "program.json").exists()
 #     assert (out_dir / "ai8x" / "ai85_cifar100_nas").is_dir()
 
-# tests/test_ai8x_tosa_pipeline.py
+# tests/test_ai8x_pipeline.py
 from pathlib import Path
 import os
 
@@ -82,6 +82,7 @@ import pytest
 from unpu_bench.cli import main
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 @pytest.mark.ai8x
 def test_ai8x_ir_compiles_real_model_no_mlir(tmp_path: Path) -> None:
@@ -99,7 +100,7 @@ def test_ai8x_ir_compiles_real_model_no_mlir(tmp_path: Path) -> None:
 
     # Provide a stable sample input to avoid random-shape edge cases.
     sample_npy = tmp_path / "input.npy"
-    x = (np.random.randn(1, 3, 32, 32) * 20.0)
+    x = np.random.randn(1, 3, 32, 32) * 20.0
     x = np.clip(np.rint(x), -127, 127).astype(np.int64)
     np.save(sample_npy, x)
 
@@ -107,21 +108,36 @@ def test_ai8x_ir_compiles_real_model_no_mlir(tmp_path: Path) -> None:
 
     rc = main(
         [
-            "--target-format", "ai8x",
-            "--target-hardware", "max78000",
-            "--bit-width", "8",
-            "--model-py", str(model_py),
-            "--model-class", model_class,
-            "--model-ckpt", str(ckpt),
-            "--input-shape", "1 3 32 32",
-            "--output-shape", "1 100",
-            "--input-names", "input",
-            "--output-names", "output",
-            "--data-sample", str(sample_npy),
-            "--ai8x-config-file", str(yaml_cfg),
-            "--ai8x-device", "MAX78000",
-            "--ai8x-prefix", "ai85_cifar100_nas",
-            "--out-dir", str(out_dir),
+            "--target-format",
+            "ai8x",
+            "--target-hardware",
+            "max78000",
+            "--bit-width",
+            "8",
+            "--model-py",
+            str(model_py),
+            "--model-class",
+            model_class,
+            "--model-ckpt",
+            str(ckpt),
+            "--input-shape",
+            "1 3 32 32",
+            "--output-shape",
+            "1 100",
+            "--input-names",
+            "input",
+            "--output-names",
+            "output",
+            "--data-sample",
+            str(sample_npy),
+            "--ai8x-config-file",
+            str(yaml_cfg),
+            "--ai8x-device",
+            "MAX78000",
+            "--ai8x-prefix",
+            "ai85_cifar100_nas",
+            "--out-dir",
+            str(out_dir),
             "--overwrite",
         ]
     )

@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-ckpt", dest="model_ckpt")  # note: dash -> underscore
     parser.add_argument("--model-onnx", dest="model_onnx")
     parser.add_argument("--model-tflite", dest="model_tflite")
-    parser.add_argument("--model-args", default="{}")       # JSON string (if you want)
+    parser.add_argument("--model-args", default="{}")  # JSON string (if you want)
 
     parser.add_argument("--input-shape", default="")
     parser.add_argument("--output-shape", default="")
@@ -59,11 +59,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--debug", action="store_true")
-    parser.add_argument(
-        "--use-tosa",
-        action="store_true",
-        help="Enable Torch->TOSA legalization/partitioning pipeline (requires torch-mlir).",
-    )
 
     # --- ai8x backend options ---
     ai8x_group = parser.add_argument_group("ai8x backend options")
@@ -135,9 +130,7 @@ def _parse_model_args(raw: str) -> Dict[str, Any]:
     try:
         value = json.loads(raw)
     except json.JSONDecodeError as exc:  # noqa: TRY003
-        raise ConfigError(
-            f"Failed to parse --model-args as JSON: {exc}"
-        ) from exc
+        raise ConfigError(f"Failed to parse --model-args as JSON: {exc}") from exc
     if not isinstance(value, dict):
         raise ConfigError("--model-args must be a JSON object/dict.")
     return value
@@ -204,16 +197,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         out_dir=args.out_dir,
         overwrite=args.overwrite,
         debug=args.debug,
-
         # ai8x-specific
         ai8x_root=None,  # or an arg if you want
         ai8x_device=args.ai8x_device,
         ai8x_config_file=args.ai8x_config_file,
         ai8x_prefix=args.ai8x_prefix,
-        use_tosa=args.use_tosa,
         emit_hardware_artifact=args.emit_hardware_artifact,
         backend_source_model=args.backend_source_model,
-        backend_tool_args=shlex.split(args.backend_tool_args) if args.backend_tool_args else [],
+        backend_tool_args=(
+            shlex.split(args.backend_tool_args) if args.backend_tool_args else []
+        ),
         backend_command=args.backend_command,
         backend_output_glob=args.backend_output_glob,
         cvi_calibration_table=args.cvi_calibration_table,

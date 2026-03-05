@@ -14,7 +14,6 @@ import torch
 from torch import nn
 
 from .ai8x_shim import install_ai8x_shim
-from .ai8x_yaml_from_tosa import emit_ai8x_yaml_and_sample
 from .backend_hardware import emit_hardware_artifacts
 from .backend_lowering import lower_program_for_backend
 from .config import PlatformSpec
@@ -32,11 +31,8 @@ from .passes import (
     run_ir_validation,
     run_legality_check,
     run_partitioning,
-    run_tosa_legality_and_partitioning,
 )
 from .quant import run_ai8x_bn_fuse_and_quantize
-from .tosa_ir import load_tosa_module
-from .tosa_lowering import lower_torch_to_tosa_mlir
 
 log = logging.getLogger(__name__)
 
@@ -73,9 +69,6 @@ class CompileConfig:
     ai8x_config_file: str | None = None
     ai8x_prefix: str = "unpu_model"
 
-    # Pipeline mode
-    use_tosa: bool = False
-
     debug: bool = False
 
     # Optional hardware artifact emission (vendor toolchain outputs)
@@ -99,11 +92,10 @@ def compile_model(cfg: CompileConfig, platforms: Dict[str, PlatformSpec]) -> Non
     del platforms  # Platform constraints are validated at CLI-level.
 
     log.info(
-        "Compile start: format=%s hardware=%s bit_width=%d use_tosa=%s",
+        "Compile start: format=%s hardware=%s bit_width=%d",
         cfg.target_format,
         cfg.target_hardware,
         cfg.bit_width,
-        cfg.use_tosa,
     )
 
     _ensure_out_dir(cfg.out_dir, overwrite=cfg.overwrite)
@@ -127,7 +119,7 @@ def compile_model(cfg: CompileConfig, platforms: Dict[str, PlatformSpec]) -> Non
                 "input_names": cfg.input_names,
                 "output_names": cfg.output_names,
                 "target_format": cfg.target_format,
-                "pipeline_mode": "tosa" if cfg.use_tosa else "ir",
+                "pipeline_mode": "ir",
             },
         )
     elif source == "onnx":
@@ -159,29 +151,25 @@ def compile_model(cfg: CompileConfig, platforms: Dict[str, PlatformSpec]) -> Non
     run_ir_canonicalization(program)
     run_ir_validation(program)
 
-    tosa_mod = None
-    if cfg.use_tosa:
-        if source != "torch" or model is None or example_input is None:
-            raise CompilationError("--use-tosa currently requires a torch model source (--model-py/--model-class).")
-        tosa_mod = _run_tosa_flow(cfg, program, model, example_input)
-    else:
-        ir_caps_path = (
-            Path(__file__).resolve().parents[1]
-            / "unpu_bench"
-            / "capabilities"
-            / f"ir_{cfg.target_format}.yaml"
+    ir_caps_path = (
+        Path(__file__).resolve().parents[1]
+        / "unpu_bench"
+        / "capabilities"
+        / f"ir_{cfg.target_format}.yaml"
+    )
+    if not ir_caps_path.exists():
+        raise CompilationError(
+            f"Missing IR capability schema for backend '{cfg.target_format}': {ir_caps_path}"
         )
-        if not ir_caps_path.exists():
-            raise CompilationError(
-                f"Missing IR capability schema for backend '{cfg.target_format}': {ir_caps_path}"
-            )
-        run_legality_check(program, backend=cfg.target_format, caps_path=ir_caps_path)
-        run_partitioning(program, backend=cfg.target_format, fallback_backend="cpu")
+    run_legality_check(program, backend=cfg.target_format, caps_path=ir_caps_path)
+    run_partitioning(program, backend=cfg.target_format, fallback_backend="cpu")
 
     if cfg.target_format == "ai8x":
         if source != "torch" or example_input is None:
-            raise CompilationError("ai8x backend currently requires torch model source (--model-py/--model-class).")
-        _configure_ai8x_inputs(cfg, tosa_mod, example_input, program)
+            raise CompilationError(
+                "ai8x backend currently requires torch model source (--model-py/--model-class)."
+            )
+        _configure_ai8x_inputs(cfg)
 
     quant_ckpt_path: str | None = None
     if cfg.target_format == "ai8x":
@@ -221,99 +209,20 @@ def compile_model(cfg: CompileConfig, platforms: Dict[str, PlatformSpec]) -> Non
     log.info("  Program:  %s", program_json_path)
 
 
-def _run_tosa_flow(
-    cfg: CompileConfig,
-    program: Program,
-    model: nn.Module,
-    example_input: torch.Tensor,
-):
-    tosa_path = os.path.join(cfg.out_dir, "module.tosa.mlir")
-    lr = lower_torch_to_tosa_mlir(
-        model=model,
-        example_inputs=[example_input],
-        out_path=tosa_path,
-        canonicalize=True,
-    )
-    log.info(
-        "TOSA MLIR written: %s (toolchain=%s canon=%s)",
-        lr.tosa_mlir_path,
-        lr.toolchain,
-        lr.canonicalized,
-    )
-
-    tosa_mod = load_tosa_module(lr.tosa_mlir_path)
-
-    caps_path = (
-        Path(__file__).resolve().parents[1]
-        / "unpu_bench"
-        / "capabilities"
-        / f"{cfg.target_format}.yaml"
-    )
-    if not caps_path.exists():
-        raise CompilationError(
-            f"Missing capability schema for backend '{cfg.target_format}': {caps_path}"
-        )
-
-    run_tosa_legality_and_partitioning(
-        program=program,
-        tosa=tosa_mod,
-        caps_path=caps_path,
-        backend=cfg.target_format,
-        out_dir=cfg.out_dir,
-    )
-    return tosa_mod
-
-
-def _configure_ai8x_inputs(
-    cfg: CompileConfig,
-    tosa_mod,
-    example_input: torch.Tensor,
-    program: Program,
-) -> None:
-    if cfg.use_tosa:
-        if tosa_mod is None:
-            raise CompilationError("Internal error: TOSA flow enabled but module is missing")
-
-        tosa_parts = program.metadata.get("tosa_partitions", {})
-        core_key = f"{cfg.target_format}_core"
-        core_range = tosa_parts.get(core_key)
-        if core_range is None:
-            raise CompilationError(
-                f"No TOSA core range recorded for {core_key}. "
-                "Legality/partitioning did not produce an ai8x core segment."
-            )
-
-        gen_dir = Path(cfg.out_dir) / "ai8x_autogen"
-        res = emit_ai8x_yaml_and_sample(
-            tosa=tosa_mod,
-            core_range=tuple(core_range),
-            out_dir=gen_dir,
-            arch=cfg.ai8x_prefix or "unpu_model",
-            dataset="cifar100",
-            device_name=str(cfg.ai8x_device or "MAX78000"),
-            example_input=example_input,
-        )
-
-        cfg.ai8x_config_file = str(res.yaml_path)
-        cfg.data_sample = str(res.sample_path)
-        log.info("Autogenerated ai8x YAML: %s", cfg.ai8x_config_file)
-        log.info("Autogenerated sample:   %s", cfg.data_sample)
-        return
-
+def _configure_ai8x_inputs(cfg: CompileConfig) -> None:
     if not cfg.ai8x_config_file:
-        raise CompilationError(
-            "ai8x backend requires --ai8x-config-file when --use-tosa is not enabled."
-        )
+        raise CompilationError("ai8x backend requires --ai8x-config-file.")
 
 
-def _build_ai8x_argv(cfg: CompileConfig, checkpoint_file: str, ai8x_dir: Path) -> list[str]:
+def _build_ai8x_argv(
+    cfg: CompileConfig, checkpoint_file: str, ai8x_dir: Path
+) -> list[str]:
     argv: list[str] = ["ai8x-izer"]
 
     argv += ["--device", str(cfg.ai8x_device or "MAX78000")]
     if not cfg.ai8x_config_file:
         raise CompilationError(
-            "ai8x backend requires a YAML config. Either provide --ai8x-config-file "
-            "or enable --use-tosa for auto-generation."
+            "ai8x backend requires a YAML config via --ai8x-config-file."
         )
     argv += ["--config-file", str(cfg.ai8x_config_file)]
 
@@ -378,7 +287,9 @@ def run_ai8x_backend(program: Program, cfg: CompileConfig) -> None:
     except SystemExit as e:
         code = int(e.code) if isinstance(e.code, int) else 1
         if code != 0:
-            raise CompilationError(f"ai8x-synthesis izer exited with code {code}") from e
+            raise CompilationError(
+                f"ai8x-synthesis izer exited with code {code}"
+            ) from e
     finally:
         sys.argv = old_argv
 
@@ -413,7 +324,7 @@ def _ensure_out_dir(out_dir: str, overwrite: bool) -> None:
 def _sanity_check_files(cfg: CompileConfig) -> None:
     missing: list[str] = []
     source = _resolve_model_source(cfg)
-    required_ai8x_yaml = cfg.target_format == "ai8x" and not cfg.use_tosa
+    required_ai8x_yaml = cfg.target_format == "ai8x"
     required_backend_source = (
         cfg.emit_hardware_artifact
         and cfg.target_format in {"tflm", "vela", "cvi", "eiq"}
@@ -445,7 +356,9 @@ def _sanity_check_files(cfg: CompileConfig) -> None:
         ]
         for label, val in required_text:
             if not val:
-                raise CompilationError(f"Missing required argument for torch source: --{label.replace('_', '-')}")
+                raise CompilationError(
+                    f"Missing required argument for torch source: --{label.replace('_', '-')}"
+                )
 
 
 def _resolve_model_source(cfg: CompileConfig) -> str:
@@ -482,7 +395,9 @@ def _import_module_from_file(path: str):
 def _load_model(cfg: CompileConfig, ckpt_override: str | None = None) -> nn.Module:
     install_ai8x_shim()
     if not cfg.model_py or not cfg.model_class:
-        raise CompilationError("Torch model source requires both --model-py and --model-class.")
+        raise CompilationError(
+            "Torch model source requires both --model-py and --model-class."
+        )
 
     module = _import_module_from_file(cfg.model_py)
     if not hasattr(module, cfg.model_class):
