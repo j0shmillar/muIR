@@ -59,6 +59,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--semantic-check", action="store_true")
+    parser.add_argument("--semantic-strict", action="store_true")
+    parser.add_argument("--semantic-rtol", type=float, default=1e-3)
+    parser.add_argument("--semantic-atol", type=float, default=1e-4)
+    parser.add_argument("--quant-contract-strict", action="store_true")
 
     # --- ai8x backend options ---
     ai8x_group = parser.add_argument_group("ai8x backend options")
@@ -217,6 +222,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         cvi_pixel_format=args.cvi_pixel_format,
         cvi_test_result=args.cvi_test_result,
         cvi_keep_aspect_ratio=args.cvi_keep_aspect_ratio,
+        semantic_check=args.semantic_check,
+        semantic_strict=args.semantic_strict,
+        semantic_rtol=args.semantic_rtol,
+        semantic_atol=args.semantic_atol,
+        quant_contract_strict=args.quant_contract_strict,
     )
 
     try:

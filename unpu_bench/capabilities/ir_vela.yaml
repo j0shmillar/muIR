@@ -1,5 +1,11 @@
 schema_version: 1
 fallback_backend: cpu
+preferred_layouts: [NCHW, NHWC, NC]
+quantization_modes: [INT8, INT16, FP32]
+forbidden_partition_boundaries:
+  - DepthwiseConv2d->Gemm
+  - Conv->Transpose
+notes: "Vela path targets Ethos-U style acceleration with preference for large contiguous conv regions."
 
 ops:
   - op: Conv

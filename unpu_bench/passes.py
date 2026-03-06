@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Dict, List
 
 from .errors import CompilationError
 from .muir import Program, Partition
@@ -150,6 +150,85 @@ def run_ir_canonicalization(program: Program) -> None:
         _canonicalize_op(op_id, program)
     program.metadata["ir_schema_version"] = 1
     program.metadata["ir_canonicalized"] = True
+
+
+def _replace_tensor_uses(program: Program, *, old_tid: str, new_tid: str) -> None:
+    g = program.graph
+    for op_id in g.op_order:
+        op = g.ops[op_id]
+        op.inputs = [new_tid if x == old_tid else x for x in op.inputs]
+    g.outputs = [new_tid if x == old_tid else x for x in g.outputs]
+    if old_tid in g.tensors:
+        old_t = g.tensors[old_tid]
+        for c in old_t.consumers:
+            if c in g.ops and c not in g.tensors[new_tid].consumers:
+                g.tensors[new_tid].consumers.append(c)
+        if (
+            old_t.producer
+            and old_t.producer in g.ops
+            and g.tensors[new_tid].producer is None
+        ):
+            g.tensors[new_tid].producer = old_t.producer
+        del g.tensors[old_tid]
+
+
+def run_ir_rewrite_passes(program: Program) -> dict[str, int]:
+    """Semantics-preserving IR rewrites that avoid backend-specific assumptions."""
+    g = program.graph
+    rewrites = {"identity_removed": 0, "relu_chain_collapsed": 0}
+
+    # 1) Remove Identity ops by bypassing input->output.
+    for op_id in list(g.op_order):
+        op = g.ops.get(op_id)
+        if (
+            op is None
+            or op.kind != "Identity"
+            or len(op.inputs) != 1
+            or len(op.outputs) != 1
+        ):
+            continue
+        src, dst = op.inputs[0], op.outputs[0]
+        if src not in g.tensors:
+            continue
+        _replace_tensor_uses(program, old_tid=dst, new_tid=src)
+        if op_id in g.op_order:
+            g.op_order.remove(op_id)
+        g.ops.pop(op_id, None)
+        if op_id in g.tensors[src].consumers:
+            g.tensors[src].consumers.remove(op_id)
+        rewrites["identity_removed"] += 1
+
+    # 2) Collapse Relu->Relu chains: relu(relu(x)) == relu(x)
+    for op_id in list(g.op_order):
+        op = g.ops.get(op_id)
+        if op is None or op.kind != "Relu" or len(op.outputs) != 1:
+            continue
+        mid = op.outputs[0]
+        t_mid = g.tensors.get(mid)
+        if t_mid is None or len(t_mid.consumers) != 1:
+            continue
+        next_id = t_mid.consumers[0]
+        next_op = g.ops.get(next_id)
+        if (
+            next_op is None
+            or next_op.kind != "Relu"
+            or len(next_op.inputs) != 1
+            or len(next_op.outputs) != 1
+        ):
+            continue
+        if next_op.inputs[0] != mid:
+            continue
+        out2 = next_op.outputs[0]
+        _replace_tensor_uses(program, old_tid=out2, new_tid=mid)
+        if next_id in g.op_order:
+            g.op_order.remove(next_id)
+        g.ops.pop(next_id, None)
+        if next_id in t_mid.consumers:
+            t_mid.consumers.remove(next_id)
+        rewrites["relu_chain_collapsed"] += 1
+
+    program.metadata["ir_rewrites"] = rewrites
+    return rewrites
 
 
 # ---------- 0) IR Validation ----------
@@ -358,4 +437,149 @@ def run_partitioning(
             )
         )
 
+    _validate_prefix_core_suffix_topology(
+        partitions,
+        backend=backend,
+        fallback_backend=fallback_backend,
+    )
     program.partitions = partitions
+
+
+def _validate_prefix_core_suffix_topology(
+    partitions: List[Partition],
+    *,
+    backend: str,
+    fallback_backend: str,
+) -> None:
+    """Enforce the only supported offload shape:
+    fallback prefix -> optional backend core -> fallback suffix.
+    """
+    if not partitions:
+        return
+    states = [p.backend for p in partitions]
+    i = 0
+    n = len(states)
+
+    while i < n and states[i] == fallback_backend:
+        i += 1
+    while i < n and states[i] == backend:
+        i += 1
+    while i < n and states[i] == fallback_backend:
+        i += 1
+
+    if i != n or sum(1 for p in partitions if p.backend == backend) > 1:
+        raise CompilationError(
+            "Invalid partition topology detected. Only fallback prefix/suffix around "
+            f"a single contiguous {backend} core are supported."
+        )
+
+
+def compute_partition_metrics(
+    program: Program,
+    *,
+    backend: str,
+    fallback_backend: str = "cpu",
+) -> Dict[str, Any]:
+    """Compute backend-agnostic partition quality metrics."""
+    parts = program.partitions or []
+    g = program.graph
+
+    op_to_part: Dict[str, int] = {}
+    for idx, p in enumerate(parts):
+        for op_id in p.op_ids:
+            op_to_part[op_id] = idx
+
+    boundary_tensors: set[str] = set()
+    for tid, t in g.tensors.items():
+        prod = t.producer
+        if not prod or prod not in op_to_part:
+            continue
+        src_idx = op_to_part[prod]
+        for c in t.consumers:
+            dst_idx = op_to_part.get(c)
+            if dst_idx is not None and dst_idx != src_idx:
+                boundary_tensors.add(tid)
+                break
+
+    backend_parts = [p for p in parts if p.backend == backend]
+    backend_ops = sum(len(p.op_ids) for p in backend_parts)
+    fallback_ops = sum(len(p.op_ids) for p in parts if p.backend == fallback_backend)
+    total_ops = len(g.op_order)
+    partition_count = len(parts)
+    cut_count = max(0, partition_count - 1)
+    topology_valid = True
+    try:
+        _validate_prefix_core_suffix_topology(
+            parts,
+            backend=backend,
+            fallback_backend=fallback_backend,
+        )
+    except CompilationError:
+        topology_valid = False
+
+    return {
+        "heuristic": "single_contiguous_core_with_cpu_prefix_suffix",
+        "offload_topology": "prefix_core_suffix",
+        "topology_valid": topology_valid,
+        "target_backend": backend,
+        "fallback_backend": fallback_backend,
+        "partition_count": partition_count,
+        "core_partition_count": len(backend_parts),
+        "cut_count": cut_count,
+        "estimated_layout_transitions": cut_count,  # proxy: one transition per partition boundary
+        "boundary_tensor_count": len(boundary_tensors),
+        "ops_total": total_ops,
+        "ops_on_target_backend": backend_ops,
+        "ops_on_fallback_backend": fallback_ops,
+        "partitions": [
+            {"id": p.id, "backend": p.backend, "op_count": len(p.op_ids)} for p in parts
+        ],
+        # Lightweight cost proxy: fewer cuts/boundaries/fallback ops is better.
+        "cost_proxy": (cut_count * 100) + (len(boundary_tensors) * 10) + fallback_ops,
+    }
+
+
+def run_quantization_contract_validation(
+    program: Program,
+    *,
+    backend: str,
+    bit_width: int,
+    strict: bool = False,
+) -> dict[str, Any]:
+    """Validate and summarize quantization metadata coverage."""
+    g = program.graph
+    tensors = list(g.tensors.values())
+    quantized_tensors = [t for t in tensors if t.quant is not None]
+    coverage = (len(quantized_tensors) / len(tensors)) if tensors else 1.0
+
+    contract = {
+        "backend": backend,
+        "bit_width": int(bit_width),
+        "total_tensors": len(tensors),
+        "quantized_tensors": len(quantized_tensors),
+        "coverage": coverage,
+        "strict": strict,
+        "status": "ok",
+        "notes": [],
+    }
+
+    # Backends commonly used with integer quantization.
+    quant_expected = bit_width <= 8 and backend in {
+        "tflm",
+        "vela",
+        "cvi",
+        "eiq",
+        "ai8x",
+    }
+    if quant_expected and coverage == 0.0:
+        msg = (
+            "No per-tensor quant metadata found in IR while quantized deployment is expected. "
+            "Proceeding in non-strict mode."
+        )
+        contract["notes"].append(msg)
+        contract["status"] = "warning"
+        if strict:
+            raise CompilationError(msg)
+
+    program.metadata["quantization_contract"] = contract
+    return contract

@@ -10,20 +10,21 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import muir
-from models.mcu_sota import MobileNetV2Tiny
+from models.reference_impls import REFERENCE_MODEL_REGISTRY
 
 
 def main() -> None:
     out_dir = Path("out/examples/03_onnx_to_cvi")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    model = MobileNetV2Tiny(num_classes=10).eval()
-    ckpt = Path("ckpts/random_mcu/mobilenetv2_tiny.random.pth")
+    model_name = "mobilenet_v2"
+    model = REFERENCE_MODEL_REGISTRY[model_name](num_classes=10).eval()
+    ckpt = Path("ckpts/random_reference") / f"{model_name}.random.pth"
     if ckpt.exists():
         model.load_state_dict(torch.load(ckpt, map_location="cpu"))
 
     dummy = torch.randn(1, 3, 32, 32)
-    onnx_path = out_dir / "mobilenetv2_tiny.onnx"
+    onnx_path = out_dir / "mobilenet_v2.onnx"
     torch.onnx.export(
         model,
         dummy,

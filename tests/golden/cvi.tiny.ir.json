@@ -17,10 +17,32 @@
     "input_names": "input",
     "input_shape": "1 3 8 8",
     "ir_canonicalized": true,
+    "ir_rewrites": {
+      "identity_removed": 0,
+      "relu_chain_collapsed": 0
+    },
+    "ir_schema_features": [
+      "canonicalized_layout_attrs",
+      "partition_metrics_v1",
+      "quant_contract_v1"
+    ],
+    "ir_schema_min_reader_version": 1,
     "ir_schema_version": 1,
     "output_names": "output",
     "output_shape": "1 4 8 8",
     "pipeline_mode": "ir",
+    "quantization_contract": {
+      "backend": "cvi",
+      "bit_width": 8,
+      "coverage": 0.0,
+      "notes": [
+        "No per-tensor quant metadata found in IR while quantized deployment is expected. Proceeding in non-strict mode."
+      ],
+      "quantized_tensors": 0,
+      "status": "warning",
+      "strict": false,
+      "total_tensors": 5
+    },
     "target_format": "cvi",
     "target_hardware": "bm1684x"
   },

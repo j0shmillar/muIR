@@ -18,6 +18,7 @@ from .backend_hardware import emit_hardware_artifacts
 from .backend_lowering import lower_program_for_backend
 from .config import PlatformSpec
 from .errors import CompilationError
+from .ir_version import migrate_program_ir_metadata, validate_program_ir_metadata
 from .muir import (
     BackendArtifact,
     Program,
@@ -27,12 +28,16 @@ from .muir import (
     write_program_json,
 )
 from .passes import (
+    compute_partition_metrics,
     run_ir_canonicalization,
-    run_ir_validation,
+    run_ir_rewrite_passes,
     run_legality_check,
     run_partitioning,
+    run_quantization_contract_validation,
+    run_ir_validation,
 )
 from .quant import run_ai8x_bn_fuse_and_quantize
+from .semantic_check import run_semantic_check_torch_vs_ir
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +91,11 @@ class CompileConfig:
     cvi_pixel_format: str | None = None
     cvi_test_result: str | None = None
     cvi_keep_aspect_ratio: bool = False
+    semantic_check: bool = False
+    semantic_strict: bool = False
+    semantic_rtol: float = 1e-3
+    semantic_atol: float = 1e-4
+    quant_contract_strict: bool = False
 
 
 def compile_model(cfg: CompileConfig, platforms: Dict[str, PlatformSpec]) -> None:
@@ -149,6 +159,9 @@ def compile_model(cfg: CompileConfig, platforms: Dict[str, PlatformSpec]) -> Non
         )
 
     run_ir_canonicalization(program)
+    run_ir_rewrite_passes(program)
+    migrate_program_ir_metadata(program)
+    validate_program_ir_metadata(program)
     run_ir_validation(program)
 
     ir_caps_path = (
@@ -163,6 +176,12 @@ def compile_model(cfg: CompileConfig, platforms: Dict[str, PlatformSpec]) -> Non
         )
     run_legality_check(program, backend=cfg.target_format, caps_path=ir_caps_path)
     run_partitioning(program, backend=cfg.target_format, fallback_backend="cpu")
+    run_quantization_contract_validation(
+        program,
+        backend=cfg.target_format,
+        bit_width=cfg.bit_width,
+        strict=cfg.quant_contract_strict,
+    )
 
     if cfg.target_format == "ai8x":
         if source != "torch" or example_input is None:
@@ -170,6 +189,25 @@ def compile_model(cfg: CompileConfig, platforms: Dict[str, PlatformSpec]) -> Non
                 "ai8x backend currently requires torch model source (--model-py/--model-class)."
             )
         _configure_ai8x_inputs(cfg)
+
+    if (
+        cfg.semantic_check
+        and source == "torch"
+        and model is not None
+        and example_input is not None
+    ):
+        sem = run_semantic_check_torch_vs_ir(
+            program=program,
+            model=model,
+            example_input=example_input,
+            rtol=cfg.semantic_rtol,
+            atol=cfg.semantic_atol,
+        )
+        program.metadata["semantic_check"] = sem
+        if cfg.semantic_strict and sem.get("status") != "pass":
+            raise CompilationError(
+                f"Semantic check failed/was skipped in strict mode: {sem}"
+            )
 
     quant_ckpt_path: str | None = None
     if cfg.target_format == "ai8x":
@@ -201,8 +239,18 @@ def compile_model(cfg: CompileConfig, platforms: Dict[str, PlatformSpec]) -> Non
                 elif cfg.model_onnx:
                     cfg.backend_source_model = cfg.model_onnx
             hw_arts = emit_hardware_artifacts(cfg)
+            if not hw_arts:
+                raise CompilationError(
+                    "--emit-hardware-artifact was requested, but no hardware artifact was produced."
+                )
             for artifact in hw_arts:
                 program.add_artifact(artifact)
+
+    program.metadata["partition_metrics"] = compute_partition_metrics(
+        program,
+        backend=cfg.target_format,
+        fallback_backend="cpu",
+    )
 
     program_json_path = write_program_json(program, cfg.out_dir)
     log.info("Compile done.")

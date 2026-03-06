@@ -1,5 +1,11 @@
 schema_version: 1
 fallback_backend: cpu
+preferred_layouts: [NCHW, NHWC, NC]
+quantization_modes: [INT8, INT16, FP32]
+forbidden_partition_boundaries:
+  - Conv->Gemm
+  - Conv->Transpose
+notes: "TFLM backend typically favors quantized kernels with contiguous conv/pool blocks."
 
 ops:
   - op: Conv

@@ -1,5 +1,10 @@
 schema_version: 1
 fallback_backend: cpu
+preferred_layouts: [NCHW, NC]
+quantization_modes: [INT8]
+forbidden_partition_boundaries:
+  - Conv->Transpose
+notes: "eIQ flow is primarily INT8-oriented and benefits from preserving conv-heavy subgraphs."
 
 ops:
   - op: Conv

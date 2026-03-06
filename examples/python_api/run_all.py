@@ -14,7 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import muir
-from models.mcu_sota import MODEL_REGISTRY
+from models.reference_impls import REFERENCE_MODEL_REGISTRY
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -22,7 +22,7 @@ def _parser() -> argparse.ArgumentParser:
         description="Run all Python API end-to-end demos with realistic MCU models."
     )
     p.add_argument("--out-root", type=Path, default=Path("out/examples/run_all"))
-    p.add_argument("--ckpt-dir", type=Path, default=Path("ckpts/random_mcu"))
+    p.add_argument("--ckpt-dir", type=Path, default=Path("ckpts/random_reference"))
     p.add_argument("--num-classes", type=int, default=10)
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--regen-ckpts", action="store_true")
@@ -37,7 +37,7 @@ def _ensure_ckpts(
     ckpts: dict[str, str] = {}
     manifest: dict[str, dict[str, Any]] = {}
 
-    for model_name, ctor in MODEL_REGISTRY.items():
+    for model_name, ctor in REFERENCE_MODEL_REGISTRY.items():
         path = ckpt_dir / f"{model_name}.random.pth"
         if force or not path.exists():
             model = ctor(num_classes=num_classes).eval()
@@ -68,7 +68,7 @@ def _run_torch_convert(
     ckpt_path: str,
     num_classes: int,
 ) -> dict[str, Any]:
-    model = MODEL_REGISTRY[model_name](num_classes=num_classes).eval()
+    model = REFERENCE_MODEL_REGISTRY[model_name](num_classes=num_classes).eval()
     model.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
     t0 = time.time()
     res = muir.convert(
@@ -98,10 +98,10 @@ def _run_torch_convert(
 def _run_onnx_case(
     *, out_dir: Path, ckpt_path: str, num_classes: int
 ) -> dict[str, Any]:
-    model = MODEL_REGISTRY["mobilenetv2_tiny"](num_classes=num_classes).eval()
+    model = REFERENCE_MODEL_REGISTRY["mobilenet_v2"](num_classes=num_classes).eval()
     model.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
     dummy = torch.randn(1, 3, 32, 32)
-    onnx_path = out_dir / "mobilenetv2_tiny.onnx"
+    onnx_path = out_dir / "mobilenet_v2.onnx"
     torch.onnx.export(
         model,
         dummy,
@@ -123,11 +123,11 @@ def _run_onnx_case(
     )
     dt_ms = int((time.time() - t0) * 1000)
     return {
-        "case": "onnx_mobilenetv2_tiny_cvi",
+        "case": "onnx_mobilenet_v2_cvi",
         "backend": "cvi",
         "hardware": "bm1684x",
         "source": "onnx",
-        "model": "mobilenetv2_tiny",
+        "model": "mobilenet_v2",
         "out_dir": str(out_dir),
         "artifacts": [a["path"] for a in res["artifacts"]],
         "elapsed_ms": dt_ms,
@@ -190,10 +190,10 @@ def main() -> int:
 
     rows: list[dict[str, Any]] = []
     run_matrix = [
-        ("dscnn_small", "tflm", "hxwe2"),
-        ("tiny_resnet8", "vela", "hxwe2"),
-        ("mobilenetv2_tiny", "cvi", "bm1684x"),
-        ("tiny_convmixer", "eiq", "mcxn947"),
+        ("dscnn", "tflm", "hxwe2"),
+        ("resnet18", "vela", "hxwe2"),
+        ("mobilenet_v2", "cvi", "bm1684x"),
+        ("convmixer", "eiq", "mcxn947"),
     ]
     for model_name, backend, hw in run_matrix:
         run_dir = out_root / f"torch_{model_name}_{backend}"
@@ -209,11 +209,11 @@ def main() -> int:
         rows.append(row)
         print(f"[ok] {row['case']} ({row['elapsed_ms']} ms)")
 
-    onnx_dir = out_root / "onnx_mobilenetv2_tiny_cvi"
+    onnx_dir = out_root / "onnx_mobilenet_v2_cvi"
     onnx_dir.mkdir(parents=True, exist_ok=True)
     onnx_row = _run_onnx_case(
         out_dir=onnx_dir,
-        ckpt_path=ckpts["mobilenetv2_tiny"],
+        ckpt_path=ckpts["mobilenet_v2"],
         num_classes=args.num_classes,
     )
     rows.append(onnx_row)

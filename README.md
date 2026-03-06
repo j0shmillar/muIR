@@ -53,13 +53,24 @@ Model source options (exactly one required):
 Outputs include:
 - `program.json` (full compile metadata)
 - `*/model.<backend>.ir.json` (backend IR bundle)
-- `*/model.<backend>.compiled.json` (IR-native executable artifact)
+- `*/model.<backend>.compiled.json` (IR-native executable artifact for `unpu_ir_runtime`, not a vendor binary)
+
+Artifact provenance is explicit in `backend_artifacts[*].meta`:
+- IR-native artifacts: `vendor_toolchain=false`, `execution_engine=unpu_ir_runtime`
+- Vendor-compiled artifacts (when `--emit-hardware-artifact` is set): `vendor_toolchain=true`
+
+`program.json` also includes `metadata.partition_metrics`:
+- `partition_count`, `cut_count`, `boundary_tensor_count`
+- `ops_on_target_backend`, `ops_on_fallback_backend`
+- `cost_proxy` and per-partition op counts
 
 ## Hardware-Native Artifact Emission
 
 Enable vendor-compiler artifacts with:
 - `--emit-hardware-artifact`
 - `--backend-source-model <path>`
+
+If `--emit-hardware-artifact` is set, compilation now fails if no vendor artifact is produced.
 
 ### Vela (built-in)
 
@@ -145,8 +156,23 @@ unpu-bench ... \
 - IR canonicalization (attrs/layout normalization)
 - IR structural validation pass
 - Schema-driven backend legality checks (`unpu_bench/capabilities/ir_*.yaml`)
-- Backend partitioning with accelerator core + fallback prefix/suffix
+- Backend partitioning with a single contiguous accelerator core + optional fallback prefix/suffix
 - E2E compile and correctness tests across multiple backends
+
+## Correctness Guarantees and Limits
+
+What is enforced today:
+- Structural IR correctness via canonicalization + validation passes.
+- Backend legality checks from explicit capability schemas.
+- E2E compile tests and backend golden artifact tests.
+
+What is not yet a formal guarantee:
+- Full semantics-preservation proof from frontend graph to backend artifact.
+- Tight numeric-error bounds across quantization/layout conversions for every backend.
+
+Practical recommendation:
+- Treat this as a tested engineering compiler pipeline, not a verified compiler.
+- For high-stakes deployment, add task-level golden-output checks in CI using representative datasets.
 
 ## Python API
 
@@ -171,20 +197,50 @@ out = muir.convert(
     target_hardware="bm1684x",
     out_dir="out_cvi",
 )
+
+# Cross-backend comparison report from existing program.json files
+report = muir.compare_runs(
+    ["out_vela/program.json", "out_cvi/program.json", "out_eiq/program.json"],
+    out_dir="out_reports",
+)
+print(report["csv"], report["markdown"])
 ```
 
-## MCU Model Zoo + Random Checkpoints
+## Cross-Backend Reports
 
-Included MCU-scale reference models:
-- `dscnn_small`
-- `mobilenetv2_tiny`
-- `tiny_resnet8`
-- `tiny_convmixer`
+Generate automatic comparison tables from one or more `program.json` files:
+
+```bash
+unpu-bench-report \
+  --program-dir out \
+  --out-dir out/reports \
+  --basename my_compare
+```
+
+Outputs:
+- `my_compare.csv`
+- `my_compare.md`
+
+Report fields include:
+- backend, topology validity, partition/cut/boundary metrics
+- target/fallback op counts and fallback ratio
+- IR-native vs vendor artifact counts and vendor artifact paths
+
+## Reference Model Zoo + Random Checkpoints
+
+Included reference model implementations used by examples:
+- `dscnn` (depthwise-separable CNN)
+- `mobilenet_v2`
+- `resnet18`
+- `convmixer`
 
 Generate random checkpoints:
 
 ```bash
-python scripts/generate_random_ckpts.py --out-dir ckpts/random_mcu --seed 7
+python scripts/generate_random_ckpts.py \
+  --registry reference \
+  --out-dir ckpts/random_reference \
+  --seed 7
 ```
 
 This writes `.pth` files plus `manifest.json`.
@@ -199,6 +255,7 @@ python examples/python_api/02_ir_edit_and_partition.py
 python examples/python_api/03_torch_to_onnx_to_cvi.py
 python examples/python_api/04_tflite_stub_to_eiq.py
 python examples/python_api/05_batch_compile_suite.py
+python examples/python_api/06_multi_backend_compare_report.py
 python examples/python_api/run_all.py
 ```
 
@@ -207,8 +264,9 @@ What each example demonstrates:
 - `02`: Torch -> IR canonicalize/validate -> IR edit (force one op to CPU) -> capability legality + backend-agnostic partitioning -> Vela backend artifacts.
 - `03`: Torch -> ONNX export -> ONNX frontend import -> CVI backend artifacts.
 - `04`: `.tflite` source -> TFLite-stub frontend -> eIQ backend artifacts.
-- `05`: Batch compile across models/backends with one Python script.
-- `run_all.py`: One-shot orchestrator. Generates fake checkpoints for realistic MCU models (if missing), runs Torch/ONNX/TFLite end-to-end conversions, and writes `summary.json` + `summary.md`.
+- `05`: Batch compile across reference models/backends with one Python script.
+- `06`: One reference model (`mobilenet_v2`) compiled across multiple backends, then compared with automatic CSV/Markdown report generation.
+- `run_all.py`: One-shot orchestrator. Generates fake checkpoints for reference models (if missing), runs Torch/ONNX/TFLite end-to-end conversions, and writes `summary.json` + `summary.md`.
 
 ## Current Scope
 

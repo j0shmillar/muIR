@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from models.mcu_sota import TinyResNet8
+from models.reference_impls import REFERENCE_MODEL_REGISTRY
 from unpu_bench.backend_lowering import lower_program_for_backend
 from unpu_bench.errors import CompilationError
 from unpu_bench.muir import build_program_from_torch, write_program_json
@@ -25,8 +25,9 @@ def main() -> None:
     out_dir = Path("out/examples/02_ir_edit_partition")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    model = TinyResNet8(num_classes=10).eval()
-    ckpt = Path("ckpts/random_mcu/tiny_resnet8.random.pth")
+    model_name = "resnet18"
+    model = REFERENCE_MODEL_REGISTRY[model_name](num_classes=10).eval()
+    ckpt = Path("ckpts/random_reference") / f"{model_name}.random.pth"
     if ckpt.exists():
         model.load_state_dict(torch.load(ckpt, map_location="cpu"))
 

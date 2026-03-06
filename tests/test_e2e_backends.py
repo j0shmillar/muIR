@@ -81,8 +81,12 @@ def _golden_path(backend: str) -> Path:
         ("eiq", "mcxn947"),
     ],
 )
-def test_e2e_compile_ir_backends_with_golden(tmp_path: Path, target_format: str, target_hardware: str) -> None:
-    out_dir = _run_compile(tmp_path, target_format=target_format, target_hardware=target_hardware)
+def test_e2e_compile_ir_backends_with_golden(
+    tmp_path: Path, target_format: str, target_hardware: str
+) -> None:
+    out_dir = _run_compile(
+        tmp_path, target_format=target_format, target_hardware=target_hardware
+    )
     assert (out_dir / "program.json").exists()
     artifact_path = _artifact_path(out_dir, target_format)
     compiled_path = _compiled_path(out_dir, target_format)
@@ -92,3 +96,15 @@ def test_e2e_compile_ir_backends_with_golden(tmp_path: Path, target_format: str,
     got = json.loads(artifact_path.read_text(encoding="utf-8"))
     expected = json.loads(_golden_path(target_format).read_text(encoding="utf-8"))
     assert got == expected
+
+    program = json.loads((out_dir / "program.json").read_text(encoding="utf-8"))
+    artifact_meta = {
+        (a["backend"], a["artifact_type"]): a["meta"]
+        for a in program.get("backend_artifacts", [])
+    }
+    ir_meta = artifact_meta[(target_format, "ir_bundle")]
+    compiled_meta = artifact_meta[(target_format, "compiled_model")]
+    assert ir_meta["vendor_toolchain"] is False
+    assert compiled_meta["vendor_toolchain"] is False
+    assert ir_meta["execution_engine"] == "unpu_ir_runtime"
+    assert compiled_meta["execution_engine"] == "unpu_ir_runtime"

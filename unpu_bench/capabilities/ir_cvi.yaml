@@ -1,5 +1,11 @@
 schema_version: 1
 fallback_backend: cpu
+preferred_layouts: [NCHW, NC]
+quantization_modes: [INT4, INT8, F16, F32]
+forbidden_partition_boundaries:
+  - Conv->Reshape
+  - Conv->Transpose
+notes: "CVI flow supports multiple quant/deploy modes; layout assumptions are commonly NCHW."
 
 ops:
   - op: Conv

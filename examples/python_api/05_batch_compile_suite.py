@@ -10,14 +10,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import muir
-from models.mcu_sota import MODEL_REGISTRY
+from models.reference_impls import REFERENCE_MODEL_REGISTRY
 
 
 RUN_MATRIX = [
-    ("dscnn_small", "tflm", "hxwe2"),
-    ("tiny_resnet8", "vela", "hxwe2"),
-    ("mobilenetv2_tiny", "cvi", "bm1684x"),
-    ("tiny_convmixer", "eiq", "mcxn947"),
+    ("dscnn", "tflm", "hxwe2"),
+    ("resnet18", "vela", "hxwe2"),
+    ("mobilenet_v2", "cvi", "bm1684x"),
+    ("convmixer", "eiq", "mcxn947"),
 ]
 
 
@@ -26,8 +26,8 @@ def main() -> None:
     root.mkdir(parents=True, exist_ok=True)
 
     for model_name, backend, hw in RUN_MATRIX:
-        model = MODEL_REGISTRY[model_name](num_classes=10).eval()
-        ckpt = Path("ckpts/random_mcu") / f"{model_name}.random.pth"
+        model = REFERENCE_MODEL_REGISTRY[model_name](num_classes=10).eval()
+        ckpt = Path("ckpts/random_reference") / f"{model_name}.random.pth"
         if ckpt.exists():
             model.load_state_dict(torch.load(ckpt, map_location="cpu"))
 

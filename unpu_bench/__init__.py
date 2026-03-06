@@ -17,6 +17,7 @@ __all__ = [
     "CompileConfig",
     "compile_model",
     "convert",
+    "compare_runs",
 ]
 
 
@@ -29,8 +30,10 @@ def __getattr__(name: str):
         if name == "CompileConfig":
             return CompileConfig
         return compile_model
-    if name == "convert":
-        from .api import convert
+    if name in {"convert", "compare_runs"}:
+        from .api import compare_runs, convert
 
-        return convert
+        if name == "convert":
+            return convert
+        return compare_runs
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

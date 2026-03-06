@@ -37,7 +37,12 @@ def _write_backend_ir_bundle(program: Program, out_dir: Path, backend: str, arti
         backend=backend,
         artifact_type="ir_bundle",
         path=str(path.name),
-        meta={"format": "json", "ir_native": True},
+        meta={
+            "format": "json",
+            "ir_native": True,
+            "execution_engine": "unpu_ir_runtime",
+            "vendor_toolchain": False,
+        },
     )
 
 
@@ -103,7 +108,13 @@ def _write_backend_compiled_model(program: Program, out_dir: Path, backend: str,
         backend=backend,
         artifact_type="compiled_model",
         path=str(path.name),
-        meta={"format": "json", "target_format": backend, "ir_native": True},
+        meta={
+            "format": "json",
+            "target_format": backend,
+            "ir_native": True,
+            "execution_engine": "unpu_ir_runtime",
+            "vendor_toolchain": False,
+        },
     )
 
 

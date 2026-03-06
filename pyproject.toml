@@ -28,6 +28,7 @@ dev = [
 
 [project.scripts]
 unpu-bench = "unpu_bench.cli:main"
+unpu-bench-report = "unpu_bench.report_cli:main"
 
 [tool.setuptools]
 packages = ["unpu_bench"]

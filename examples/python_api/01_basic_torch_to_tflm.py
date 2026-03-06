@@ -10,15 +10,16 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import muir
-from models.mcu_sota import DSCNNSmall
+from models.reference_impls import REFERENCE_MODEL_REGISTRY
 
 
 def main() -> None:
     out_dir = Path("out/examples/01_basic_tflm")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    model = DSCNNSmall(num_classes=10).eval()
-    ckpt = Path("ckpts/random_mcu/dscnn_small.random.pth")
+    model_name = "dscnn"
+    model = REFERENCE_MODEL_REGISTRY[model_name](num_classes=10).eval()
+    ckpt = Path("ckpts/random_reference") / f"{model_name}.random.pth"
     if ckpt.exists():
         model.load_state_dict(torch.load(ckpt, map_location="cpu"))
 

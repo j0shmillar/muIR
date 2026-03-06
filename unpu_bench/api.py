@@ -9,6 +9,7 @@ import torch
 from .backend_hardware import emit_hardware_artifacts
 from .backend_lowering import lower_program_for_backend
 from .errors import CompilationError
+from .ir_version import migrate_program_ir_metadata, validate_program_ir_metadata
 from .muir import (
     build_program_from_onnx,
     build_program_from_tflite_stub,
@@ -17,12 +18,17 @@ from .muir import (
     write_program_json,
 )
 from .passes import (
+    compute_partition_metrics,
     run_ir_canonicalization,
-    run_ir_validation,
     run_legality_check,
     run_partitioning,
+    run_quantization_contract_validation,
+    run_ir_rewrite_passes,
+    run_ir_validation,
 )
 from .pipeline import CompileConfig
+from .reporting import write_cross_backend_report
+from .semantic_check import run_semantic_check_torch_vs_ir
 
 
 def _shape_to_str(shape: Iterable[int] | None) -> str:
@@ -50,6 +56,11 @@ def convert(
     cvi_tolerance: float = 0.99,
     cvi_dynamic: bool = False,
     strict_partition: bool = False,
+    semantic_check: bool = False,
+    semantic_strict: bool = False,
+    semantic_rtol: float = 1e-3,
+    semantic_atol: float = 1e-4,
+    quant_contract_strict: bool = False,
 ) -> Dict[str, Any]:
     """Programmatic conversion entrypoint.
 
@@ -114,6 +125,9 @@ def convert(
         raise CompilationError("Unsupported model type for convert().")
 
     run_ir_canonicalization(program)
+    run_ir_rewrite_passes(program)
+    migrate_program_ir_metadata(program)
+    validate_program_ir_metadata(program)
     run_ir_validation(program)
 
     ir_caps_path = (
@@ -137,6 +151,33 @@ def convert(
                 op.legal_backends = ["cpu"]
             run_partitioning(program, backend=backend, fallback_backend="cpu")
             program.metadata["partition_fallback"] = "cpu_full"
+        run_quantization_contract_validation(
+            program,
+            backend=backend,
+            bit_width=bit_width,
+            strict=quant_contract_strict,
+        )
+
+    if semantic_check and isinstance(model, torch.nn.Module):
+        if input_shape is None:
+            raise CompilationError(
+                "semantic_check=True with torch model requires input_shape."
+            )
+        example_input = torch.randn(
+            *tuple(int(x) for x in input_shape), dtype=torch.float32
+        )
+        sem = run_semantic_check_torch_vs_ir(
+            program=program,
+            model=model.eval(),
+            example_input=example_input,
+            rtol=semantic_rtol,
+            atol=semantic_atol,
+        )
+        program.metadata["semantic_check"] = sem
+        if semantic_strict and sem.get("status") != "pass":
+            raise CompilationError(
+                f"Semantic check failed/was skipped in strict mode: {sem}"
+            )
 
     if backend != "ai8x":
         for art in lower_program_for_backend(
@@ -180,8 +221,19 @@ def convert(
                 cvi_tolerance=cvi_tolerance,
                 cvi_dynamic=cvi_dynamic,
             )
-            for art in emit_hardware_artifacts(cfg):
+            hw_arts = emit_hardware_artifacts(cfg)
+            if not hw_arts:
+                raise CompilationError(
+                    "emit_hardware_artifact=True requested but no vendor artifact was produced."
+                )
+            for art in hw_arts:
                 program.add_artifact(art)
+
+    program.metadata["partition_metrics"] = compute_partition_metrics(
+        program,
+        backend=backend,
+        fallback_backend="cpu",
+    )
 
     write_program_json(program, str(out_root))
     return {
@@ -189,3 +241,17 @@ def convert(
         "program": program_to_json(program),
         "artifacts": [asdict(a) for a in program.backend_artifacts],
     }
+
+
+def compare_runs(
+    program_jsons: Iterable[str | Path],
+    *,
+    out_dir: str,
+    basename: str = "cross_backend_report",
+) -> Dict[str, str]:
+    paths = write_cross_backend_report(
+        program_jsons,
+        out_dir=out_dir,
+        basename=basename,
+    )
+    return dict(paths)

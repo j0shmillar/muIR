@@ -48,10 +48,14 @@ def _find_newest(pattern: str) -> Path | None:
 
 def _emit_tflm_passthrough(cfg: CompileConfig, out_root: Path) -> list[BackendArtifact]:
     if not cfg.backend_source_model:
-        return []
+        raise CompilationError(
+            "tflm hardware artifact requires --backend-source-model <model.tflite>."
+        )
     src = Path(cfg.backend_source_model)
     if src.suffix.lower() != ".tflite":
-        raise CompilationError("tflm hardware artifact expects --backend-source-model to be a .tflite file.")
+        raise CompilationError(
+            "tflm hardware artifact expects --backend-source-model to be a .tflite file."
+        )
     out_dir = out_root / "tflm"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "model.tflm.tflite"
@@ -61,17 +65,27 @@ def _emit_tflm_passthrough(cfg: CompileConfig, out_root: Path) -> list[BackendAr
             backend="tflm",
             artifact_type="hardware_model",
             path=_relative(out_path, out_root),
-            meta={"format": "tflite", "optimized": False, "source": str(src)},
+            meta={
+                "format": "tflite",
+                "optimized": False,
+                "source": str(src),
+                "execution_engine": "tflite_micro",
+                "vendor_toolchain": True,
+            },
         )
     ]
 
 
 def _emit_vela(cfg: CompileConfig, out_root: Path) -> list[BackendArtifact]:
     if not cfg.backend_source_model:
-        return []
+        raise CompilationError(
+            "vela hardware artifact requires --backend-source-model <model.tflite>."
+        )
     src = Path(cfg.backend_source_model)
     if src.suffix.lower() != ".tflite":
-        raise CompilationError("vela hardware artifact expects --backend-source-model to be a .tflite file.")
+        raise CompilationError(
+            "vela hardware artifact expects --backend-source-model to be a .tflite file."
+        )
     vela = shutil.which("vela")
     if not vela:
         raise CompilationError(
@@ -99,7 +113,14 @@ def _emit_vela(cfg: CompileConfig, out_root: Path) -> list[BackendArtifact]:
             backend="vela",
             artifact_type="hardware_model",
             path=_relative(cand, out_root),
-            meta={"format": "tflite", "optimized": True, "source": str(src), "tool": "vela"},
+            meta={
+                "format": "tflite",
+                "optimized": True,
+                "source": str(src),
+                "tool": "vela",
+                "execution_engine": "ethos_u",
+                "vendor_toolchain": True,
+            },
         )
     ]
 
@@ -130,15 +151,27 @@ def _cvi_quant_mode(bit_width: int | str) -> str:
 
 def _emit_cvi(cfg: CompileConfig, out_root: Path) -> list[BackendArtifact]:
     if not cfg.backend_source_model:
-        return []
+        raise CompilationError(
+            "cvi hardware artifact requires --backend-source-model <model.onnx>."
+        )
     src = Path(cfg.backend_source_model)
     if src.suffix.lower() != ".onnx":
-        raise CompilationError("cvi hardware artifact expects --backend-source-model to be an .onnx file.")
+        raise CompilationError(
+            "cvi hardware artifact expects --backend-source-model to be an .onnx file."
+        )
 
     transform_bin = shutil.which("model_transform.py")
     cali_bin = shutil.which("run_calibration.py")
     deploy_bin = shutil.which("model_deploy.py")
-    missing_bins = [n for n, p in [("model_transform.py", transform_bin), ("run_calibration.py", cali_bin), ("model_deploy.py", deploy_bin)] if p is None]
+    missing_bins = [
+        n
+        for n, p in [
+            ("model_transform.py", transform_bin),
+            ("run_calibration.py", cali_bin),
+            ("model_deploy.py", deploy_bin),
+        ]
+        if p is None
+    ]
     if missing_bins:
         raise CompilationError(
             "CVI toolchain binaries not found in PATH: " + ", ".join(missing_bins)
@@ -148,7 +181,11 @@ def _emit_cvi(cfg: CompileConfig, out_root: Path) -> list[BackendArtifact]:
     out_dir.mkdir(parents=True, exist_ok=True)
     model_name = src.stem
     model_mlir = out_dir / f"{model_name}.mlir"
-    cal_table = Path(cfg.cvi_calibration_table) if cfg.cvi_calibration_table else (out_dir / f"{model_name}.table")
+    cal_table = (
+        Path(cfg.cvi_calibration_table)
+        if cfg.cvi_calibration_table
+        else (out_dir / f"{model_name}.table")
+    )
     output_model = out_dir / f"{model_name}.cvimodel"
 
     # 1) transform
@@ -242,7 +279,9 @@ def _emit_cvi(cfg: CompileConfig, out_root: Path) -> list[BackendArtifact]:
     )
 
     if not output_model.exists():
-        raise CompilationError(f"CVI pipeline finished but output model missing: {output_model}")
+        raise CompilationError(
+            f"CVI pipeline finished but output model missing: {output_model}"
+        )
 
     return [
         BackendArtifact(
@@ -254,6 +293,8 @@ def _emit_cvi(cfg: CompileConfig, out_root: Path) -> list[BackendArtifact]:
                 "optimized": True,
                 "source": str(src),
                 "tool": "cvi_toolchain",
+                "execution_engine": "cvi_runtime",
+                "vendor_toolchain": True,
             },
         )
     ]
@@ -261,10 +302,14 @@ def _emit_cvi(cfg: CompileConfig, out_root: Path) -> list[BackendArtifact]:
 
 def _emit_eiq(cfg: CompileConfig, out_root: Path) -> list[BackendArtifact]:
     if not cfg.backend_source_model:
-        return []
+        raise CompilationError(
+            "eiq hardware artifact requires --backend-source-model <model.tflite>."
+        )
     src = Path(cfg.backend_source_model)
     if src.suffix.lower() != ".tflite":
-        raise CompilationError("eiq hardware artifact expects --backend-source-model to be a .tflite file.")
+        raise CompilationError(
+            "eiq hardware artifact expects --backend-source-model to be a .tflite file."
+        )
 
     neutron = os.environ.get("EIQ_NEUTRON_PATH")
     if neutron:
@@ -293,7 +338,9 @@ def _emit_eiq(cfg: CompileConfig, out_root: Path) -> list[BackendArtifact]:
     (out_dir / "eiq.log").write_text(f"{stdout}\n{stderr}", encoding="utf-8")
 
     if not out_model.exists():
-        raise CompilationError(f"eIQ compiler finished but output model missing: {out_model}")
+        raise CompilationError(
+            f"eIQ compiler finished but output model missing: {out_model}"
+        )
 
     return [
         BackendArtifact(
@@ -305,6 +352,8 @@ def _emit_eiq(cfg: CompileConfig, out_root: Path) -> list[BackendArtifact]:
                 "optimized": True,
                 "source": str(src),
                 "tool": str(neutron_bin),
+                "execution_engine": "eiq_runtime",
+                "vendor_toolchain": True,
             },
         )
     ]
@@ -312,7 +361,9 @@ def _emit_eiq(cfg: CompileConfig, out_root: Path) -> list[BackendArtifact]:
 
 def _emit_external(cfg: CompileConfig, out_root: Path) -> list[BackendArtifact]:
     if not cfg.backend_command:
-        return []
+        raise CompilationError(
+            "No built-in hardware emitter for this backend. Provide --backend-command."
+        )
     if not cfg.backend_source_model:
         raise CompilationError("--backend-command requires --backend-source-model.")
 
@@ -326,7 +377,9 @@ def _emit_external(cfg: CompileConfig, out_root: Path) -> list[BackendArtifact]:
     )
     cmd = shlex.split(cmd_text)
     stdout, stderr = _run_cmd(cmd, cwd=out_root)
-    (out_dir / f"{cfg.target_format}.tool.log").write_text(f"{stdout}\n{stderr}", encoding="utf-8")
+    (out_dir / f"{cfg.target_format}.tool.log").write_text(
+        f"{stdout}\n{stderr}", encoding="utf-8"
+    )
 
     pattern = cfg.backend_output_glob or "*"
     cand = _find_newest(str(out_dir / pattern))
@@ -339,7 +392,13 @@ def _emit_external(cfg: CompileConfig, out_root: Path) -> list[BackendArtifact]:
             backend=cfg.target_format,
             artifact_type="hardware_model",
             path=_relative(cand, out_root),
-            meta={"format": cand.suffix.lstrip("."), "source": str(src), "command": cmd_text},
+            meta={
+                "format": cand.suffix.lstrip("."),
+                "source": str(src),
+                "command": cmd_text,
+                "execution_engine": "external_runtime",
+                "vendor_toolchain": True,
+            },
         )
     ]
 
